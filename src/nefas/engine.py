@@ -13,14 +13,16 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize
 
-matplotlib.use("Agg")
-from matplotlib import pyplot as plt
-
 from .config import RainfallConfig, SimulationConfig
 from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt
+
 LOGGER = logging.getLogger(__name__)
+GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
+DRY_DEPTH_METERS = 0.001
 
 
 @dataclass(frozen=True)
@@ -252,8 +254,161 @@ def add_rainfall_depth(
 
 
 def water_timestep(state: SimulationState, dt_seconds: float) -> None:
-    """Move water during one timestep once the finite-volume solver exists."""
-    pass
+    """Advance water depth with vectorized local-inertial face fluxes."""
+    update_face_fluxes(state, dt_seconds)
+    limit_outgoing_fluxes(state, dt_seconds)
+    update_depth_from_fluxes(state, dt_seconds)
+
+
+def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Update interior face fluxes from water-surface slope and Manning friction."""
+    grid = state.grid
+    hydraulic = state.hydraulic
+    surface = state.surface
+    eta = hydraulic.water_surface(grid)
+
+    qx_old = hydraulic.qx[:, 1:-1]
+    # Face depth uses the higher adjacent terrain cell as the sill elevation.
+    h_face_x = np.maximum(
+        0,
+        np.maximum(eta[:, :-1], eta[:, 1:])
+        - np.maximum(grid.elevation[:, :-1], grid.elevation[:, 1:]),
+    )
+    valid_x = grid.valid_cells[:, :-1] & grid.valid_cells[:, 1:]
+    slope_x = (eta[:, 1:] - eta[:, :-1]) / grid.dx
+    n_face_x = 0.5 * (surface.manning_n[:, :-1] + surface.manning_n[:, 1:])
+    hydraulic.qx[:, 1:-1] = local_inertial_flux_update(
+        old_flux=qx_old,
+        face_depth=h_face_x,
+        slope=slope_x,
+        manning_n=n_face_x,
+        valid_faces=valid_x,
+        dt_seconds=dt_seconds,
+    )
+
+    # Open boundaries are dry outside cells; outward flux leaves the domain.
+    left_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qx[:, 0],
+        face_depth=hydraulic.depth[:, 0],
+        slope=(eta[:, 0] - grid.elevation[:, 0]) / grid.dx,
+        manning_n=surface.manning_n[:, 0],
+        valid_faces=grid.valid_cells[:, 0],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qx[:, 0] = np.minimum(left_boundary_flux, 0)
+    right_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qx[:, -1],
+        face_depth=hydraulic.depth[:, -1],
+        slope=(grid.elevation[:, -1] - eta[:, -1]) / grid.dx,
+        manning_n=surface.manning_n[:, -1],
+        valid_faces=grid.valid_cells[:, -1],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qx[:, -1] = np.maximum(right_boundary_flux, 0)
+
+    qy_old = hydraulic.qy[1:-1, :]
+    # Face depth uses the higher adjacent terrain cell as the sill elevation.
+    h_face_y = np.maximum(
+        0,
+        np.maximum(eta[:-1, :], eta[1:, :])
+        - np.maximum(grid.elevation[:-1, :], grid.elevation[1:, :]),
+    )
+    valid_y = grid.valid_cells[:-1, :] & grid.valid_cells[1:, :]
+    slope_y = (eta[1:, :] - eta[:-1, :]) / grid.dy
+    n_face_y = 0.5 * (surface.manning_n[:-1, :] + surface.manning_n[1:, :])
+    hydraulic.qy[1:-1, :] = local_inertial_flux_update(
+        old_flux=qy_old,
+        face_depth=h_face_y,
+        slope=slope_y,
+        manning_n=n_face_y,
+        valid_faces=valid_y,
+        dt_seconds=dt_seconds,
+    )
+
+    # Open boundaries are dry outside cells; outward flux leaves the domain.
+    top_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qy[0, :],
+        face_depth=hydraulic.depth[0, :],
+        slope=(eta[0, :] - grid.elevation[0, :]) / grid.dy,
+        manning_n=surface.manning_n[0, :],
+        valid_faces=grid.valid_cells[0, :],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qy[0, :] = np.minimum(top_boundary_flux, 0)
+    bottom_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qy[-1, :],
+        face_depth=hydraulic.depth[-1, :],
+        slope=(grid.elevation[-1, :] - eta[-1, :]) / grid.dy,
+        manning_n=surface.manning_n[-1, :],
+        valid_faces=grid.valid_cells[-1, :],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qy[-1, :] = np.maximum(bottom_boundary_flux, 0)
+
+
+def local_inertial_flux_update(
+    *,
+    old_flux: np.ndarray,
+    face_depth: np.ndarray,
+    slope: np.ndarray,
+    manning_n: np.ndarray,
+    valid_faces: np.ndarray,
+    dt_seconds: float,
+) -> np.ndarray:
+    """Return the semi-implicit local-inertial flux update for face arrays."""
+    depth_safe = np.maximum(face_depth, DRY_DEPTH_METERS)
+    denominator = (
+        1
+        + GRAVITY_METERS_PER_SECOND_SQUARED
+        * dt_seconds
+        * manning_n**2
+        * np.abs(old_flux)
+        / depth_safe ** (7 / 3)
+    )
+    flux = (
+        old_flux
+        - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
+    ) / denominator
+    return np.where(valid_faces & (face_depth >= DRY_DEPTH_METERS), flux, 0)
+
+
+def limit_outgoing_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Scale outgoing face fluxes so no cell can lose more water than it stores."""
+    depth = state.hydraulic.depth
+    qx = state.hydraulic.qx
+    qy = state.hydraulic.qy
+    valid_cells = state.grid.valid_cells
+
+    outgoing_depth = dt_seconds * (
+        np.maximum(qx[:, 1:], 0) / state.grid.dx
+        + np.maximum(-qx[:, :-1], 0) / state.grid.dx
+        + np.maximum(qy[1:, :], 0) / state.grid.dy
+        + np.maximum(-qy[:-1, :], 0) / state.grid.dy
+    )
+    scale = np.ones_like(depth)
+    needs_limit = valid_cells & (outgoing_depth > depth) & (outgoing_depth > 0)
+    scale[needs_limit] = depth[needs_limit] / outgoing_depth[needs_limit]
+
+    qx[:, 1:-1] *= np.where(qx[:, 1:-1] >= 0, scale[:, :-1], scale[:, 1:])
+    qx[:, 0] *= np.where(qx[:, 0] >= 0, 1, scale[:, 0])
+    qx[:, -1] *= np.where(qx[:, -1] >= 0, scale[:, -1], 1)
+
+    qy[1:-1, :] *= np.where(qy[1:-1, :] >= 0, scale[:-1, :], scale[1:, :])
+    qy[0, :] *= np.where(qy[0, :] >= 0, 1, scale[0, :])
+    qy[-1, :] *= np.where(qy[-1, :] >= 0, scale[-1, :], 1)
+
+
+def update_depth_from_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Update cell depths from vectorized face-flux divergence."""
+    depth = state.hydraulic.depth
+    qx = state.hydraulic.qx
+    qy = state.hydraulic.qy
+    depth += dt_seconds * (
+        (qx[:, :-1] - qx[:, 1:]) / state.grid.dx
+        + (qy[:-1, :] - qy[1:, :]) / state.grid.dy
+    )
+    np.maximum(depth, 0, out=depth)
+    depth[~state.grid.valid_cells] = 0
 
 
 def update_diagnostics(state: SimulationState, dt_seconds: float) -> None:
