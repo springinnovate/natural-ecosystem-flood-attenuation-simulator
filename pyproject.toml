@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nefas"
+version = "0.1.0"
+description = "Natural Ecosystem Flood Attenuation Simulator"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+nefas-run = "nefas.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
