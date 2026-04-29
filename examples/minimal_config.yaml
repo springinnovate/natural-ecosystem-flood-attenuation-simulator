@@ -24,6 +24,9 @@ time_step:
 
 output:
   directory: outputs/example
+  snapshots:
+    directory: snapshots
+    interval_minutes: 15
 
 processing:
   area_of_interest:

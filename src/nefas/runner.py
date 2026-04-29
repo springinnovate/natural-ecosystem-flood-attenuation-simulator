@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .config import SimulationConfig, load_config
+from .engine import run_simulation
 from .preprocessing import prepare_intermediates
 
 LOGGER = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ def prepare_run(config_path: Path) -> SimulationConfig:
         "load configuration",
         "prepare output directory",
         "prepare geospatial intermediates",
+        "run simulation",
     )
     with tqdm(steps, desc="Preparing run", unit="step", disable=not sys.stderr.isatty()) as progress:
         config = load_config(config_path)
@@ -32,6 +34,10 @@ def prepare_run(config_path: Path) -> SimulationConfig:
 
         intermediates = prepare_intermediates(config, config_path)
         LOGGER.info("Intermediate workspace is ready at %s", intermediates.workspace)
+        progress.update()
+
+        simulation = run_simulation(config, intermediates)
+        LOGGER.info("Snapshot directory is ready at %s", simulation.snapshot_directory)
         progress.update()
 
     return config
