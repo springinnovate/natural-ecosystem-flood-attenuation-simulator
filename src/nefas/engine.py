@@ -6,26 +6,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import geopandas as gpd
-import matplotlib
 import numpy as np
-import rasterio
-from rasterio.features import rasterize
-
-matplotlib.use("Agg")
-from matplotlib import pyplot as plt
 
 from .config import RainfallConfig, SimulationConfig
-from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
+if TYPE_CHECKING:
+    from .preprocessing import IntermediateOutputs
+
 LOGGER = logging.getLogger(__name__)
-OPEN_BOUNDARY_DROP_METERS = 1.0
-SIMPLE_WATER_TRANSFER_FRACTION_PER_SECOND = 0.05
-NEIGHBOR_OFFSETS = ((-1, 0), (1, 0), (0, -1), (0, 1))
-CellIndex = tuple[int, int]
-Receiver = tuple[CellIndex | None, float]
+GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
+DRY_DEPTH_METERS = 0.001
 
 
 @dataclass(frozen=True)
@@ -150,6 +143,10 @@ def timestep_duration_seconds(
 
 def storm_footprint_mask(storm_footprint: Path, template_raster: Path) -> np.ndarray:
     """Rasterize the storm footprint onto the clipped DEM grid."""
+    import geopandas as gpd
+    import rasterio
+    from rasterio.features import rasterize
+
     storm = gpd.read_file(storm_footprint)
     if storm.empty:
         raise RuntimeError("Storm footprint does not contain any features.")
@@ -257,85 +254,133 @@ def add_rainfall_depth(
 
 
 def water_timestep(state: SimulationState, dt_seconds: float) -> None:
-    """Move a capped fraction of water to lower neighboring cells."""
+    """Advance water depth with vectorized local-inertial face fluxes."""
+    update_face_fluxes(state, dt_seconds)
+    limit_outgoing_fluxes(state, dt_seconds)
+    update_depth_from_fluxes(state, dt_seconds)
+
+
+def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Update interior face fluxes from water-surface slope and Manning friction."""
+    grid = state.grid
+    hydraulic = state.hydraulic
+    surface = state.surface
+    eta = hydraulic.water_surface(grid)
+
+    qx_old = hydraulic.qx[:, 1:-1]
+    h_face_x = face_depth_x(grid.elevation, eta)
+    valid_x = grid.valid_cells[:, :-1] & grid.valid_cells[:, 1:]
+    slope_x = (eta[:, 1:] - eta[:, :-1]) / grid.dx
+    n_face_x = 0.5 * (surface.manning_n[:, :-1] + surface.manning_n[:, 1:])
+    hydraulic.qx[:, 1:-1] = local_inertial_flux_update(
+        old_flux=qx_old,
+        face_depth=h_face_x,
+        slope=slope_x,
+        manning_n=n_face_x,
+        valid_faces=valid_x,
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qx[:, 0] = 0
+    hydraulic.qx[:, -1] = 0
+
+    qy_old = hydraulic.qy[1:-1, :]
+    h_face_y = face_depth_y(grid.elevation, eta)
+    valid_y = grid.valid_cells[:-1, :] & grid.valid_cells[1:, :]
+    slope_y = (eta[1:, :] - eta[:-1, :]) / grid.dy
+    n_face_y = 0.5 * (surface.manning_n[:-1, :] + surface.manning_n[1:, :])
+    hydraulic.qy[1:-1, :] = local_inertial_flux_update(
+        old_flux=qy_old,
+        face_depth=h_face_y,
+        slope=slope_y,
+        manning_n=n_face_y,
+        valid_faces=valid_y,
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qy[0, :] = 0
+    hydraulic.qy[-1, :] = 0
+
+
+def face_depth_x(elevation: np.ndarray, water_surface: np.ndarray) -> np.ndarray:
+    """Return representative depths at east-west interior faces."""
+    return np.maximum(
+        0,
+        np.maximum(water_surface[:, :-1], water_surface[:, 1:])
+        - np.maximum(elevation[:, :-1], elevation[:, 1:]),
+    )
+
+
+def face_depth_y(elevation: np.ndarray, water_surface: np.ndarray) -> np.ndarray:
+    """Return representative depths at north-south interior faces."""
+    return np.maximum(
+        0,
+        np.maximum(water_surface[:-1, :], water_surface[1:, :])
+        - np.maximum(elevation[:-1, :], elevation[1:, :]),
+    )
+
+
+def local_inertial_flux_update(
+    *,
+    old_flux: np.ndarray,
+    face_depth: np.ndarray,
+    slope: np.ndarray,
+    manning_n: np.ndarray,
+    valid_faces: np.ndarray,
+    dt_seconds: float,
+) -> np.ndarray:
+    """Return the semi-implicit local-inertial flux update for face arrays."""
+    depth_safe = np.maximum(face_depth, DRY_DEPTH_METERS)
+    denominator = (
+        1
+        + GRAVITY_METERS_PER_SECOND_SQUARED
+        * dt_seconds
+        * manning_n**2
+        * np.abs(old_flux)
+        / depth_safe ** (7 / 3)
+    )
+    flux = (
+        old_flux
+        - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
+    ) / denominator
+    return np.where(valid_faces & (face_depth >= DRY_DEPTH_METERS), flux, 0)
+
+
+def limit_outgoing_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Scale outgoing face fluxes so no cell can lose more water than it stores."""
     depth = state.hydraulic.depth
+    qx = state.hydraulic.qx
+    qy = state.hydraulic.qy
     valid_cells = state.grid.valid_cells
-    wet_cells = valid_cells & (depth > 0)
-    if not wet_cells.any():
-        return
 
-    transfer_fraction = simple_water_transfer_fraction(dt_seconds)
-    water_surface = state.hydraulic.water_surface(state.grid)
-    boundary_surface = open_boundary_surface(state.grid)
-    outflow = np.zeros_like(depth)
-    inflow = np.zeros_like(depth)
+    outgoing_depth = dt_seconds * (
+        np.maximum(qx[:, 1:], 0) / state.grid.dx
+        + np.maximum(-qx[:, :-1], 0) / state.grid.dx
+        + np.maximum(qy[1:, :], 0) / state.grid.dy
+        + np.maximum(-qy[:-1, :], 0) / state.grid.dy
+    )
+    scale = np.ones_like(depth)
+    needs_limit = valid_cells & (outgoing_depth > depth) & (outgoing_depth > 0)
+    scale[needs_limit] = depth[needs_limit] / outgoing_depth[needs_limit]
 
-    for row, col in np.argwhere(wet_cells):
-        receivers = lower_receivers(
-            state.grid,
-            water_surface,
-            row=int(row),
-            col=int(col),
-            boundary_surface=boundary_surface,
-        )
-        if not receivers:
-            continue
+    qx[:, 1:-1] *= np.where(qx[:, 1:-1] >= 0, scale[:, :-1], scale[:, 1:])
+    qx[:, 0] *= np.where(qx[:, 0] >= 0, 1, scale[:, 0])
+    qx[:, -1] *= np.where(qx[:, -1] >= 0, scale[:, -1], 1)
 
-        transfer_depth = depth[row, col] * transfer_fraction
-        total_drop = sum(drop for _, drop in receivers)
-        outflow[row, col] += transfer_depth
-        for receiver, drop in receivers:
-            if receiver is None:
-                continue
-            receiver_row, receiver_col = receiver
-            inflow[receiver_row, receiver_col] += transfer_depth * (drop / total_drop)
+    qy[1:-1, :] *= np.where(qy[1:-1, :] >= 0, scale[:-1, :], scale[1:, :])
+    qy[0, :] *= np.where(qy[0, :] >= 0, 1, scale[0, :])
+    qy[-1, :] *= np.where(qy[-1, :] >= 0, scale[-1, :], 1)
 
-    depth += inflow - outflow
+
+def update_depth_from_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Update cell depths from vectorized face-flux divergence."""
+    depth = state.hydraulic.depth
+    qx = state.hydraulic.qx
+    qy = state.hydraulic.qy
+    depth += dt_seconds * (
+        (qx[:, :-1] - qx[:, 1:]) / state.grid.dx
+        + (qy[:-1, :] - qy[1:, :]) / state.grid.dy
+    )
     np.maximum(depth, 0, out=depth)
-
-
-def open_boundary_surface(grid: RasterGrid) -> float:
-    """Return the synthetic low surface used for open boundaries and nodata."""
-    return float(np.nanmin(grid.elevation[grid.valid_cells]) - OPEN_BOUNDARY_DROP_METERS)
-
-
-def simple_water_transfer_fraction(dt_seconds: float) -> float:
-    """Return the hard-coded water fraction allowed to move this timestep."""
-    return min(1.0, SIMPLE_WATER_TRANSFER_FRACTION_PER_SECOND * dt_seconds)
-
-
-def lower_receivers(
-    grid: RasterGrid,
-    water_surface: np.ndarray,
-    row: int,
-    col: int,
-    boundary_surface: float,
-) -> list[Receiver]:
-    """Return lower valid neighbors and open-boundary sinks for a cell."""
-    current_surface = water_surface[row, col]
-    receivers: list[Receiver] = []
-    for row_offset, col_offset in NEIGHBOR_OFFSETS:
-        neighbor_row = row + row_offset
-        neighbor_col = col + col_offset
-        neighbor = neighbor_index(grid, neighbor_row, neighbor_col)
-        neighbor_surface = (
-            boundary_surface
-            if neighbor is None
-            else water_surface[neighbor_row, neighbor_col]
-        )
-        drop = current_surface - neighbor_surface
-        if drop > 0:
-            receivers.append((neighbor, float(drop)))
-    return receivers
-
-
-def neighbor_index(grid: RasterGrid, row: int, col: int) -> CellIndex | None:
-    """Return a valid neighbor index, or none for open boundary drainage."""
-    if row < 0 or col < 0 or row >= grid.ny or col >= grid.nx:
-        return None
-    if not grid.valid_cells[row, col]:
-        return None
-    return row, col
+    depth[~state.grid.valid_cells] = 0
 
 
 def update_diagnostics(state: SimulationState, dt_seconds: float) -> None:
@@ -377,6 +422,11 @@ def render_snapshot(
     elapsed_minutes: float,
 ) -> None:
     """Render DEM, storm footprint, and water depth into a PNG image."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+
     figure, axis = plt.subplots(figsize=(8, 6), dpi=150)
     axis.imshow(np.ma.masked_invalid(grid.elevation), cmap="gray")
     axis.imshow(np.where(storm_mask, 1.0, np.nan), cmap="Blues", alpha=0.22, vmin=0, vmax=1)

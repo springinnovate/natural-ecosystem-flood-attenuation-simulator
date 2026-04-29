@@ -118,33 +118,9 @@ class EngineTests(unittest.TestCase):
 
         np.testing.assert_allclose(state.hydraulic.depth, np.array([[0.01, 0]]))
 
-    def test_water_timestep_moves_water_to_lower_neighbors(self) -> None:
+    def test_water_timestep_updates_east_west_flux_from_surface_slope(self) -> None:
         grid = RasterGrid(
-            elevation=np.zeros((3, 3), dtype=np.float64),
-            dx=30,
-            dy=30,
-        )
-        state = SimulationState.dry(
-            grid,
-            manning_n=0.08,
-            runoff_coefficient=1.0,
-        )
-        state.hydraulic.depth[1, 1] = 1.0
-
-        water_timestep(state, dt_seconds=5)
-
-        expected_depth = np.array(
-            [
-                [0, 0.0625, 0],
-                [0.0625, 0.75, 0.0625],
-                [0, 0.0625, 0],
-            ]
-        )
-        np.testing.assert_allclose(state.hydraulic.depth, expected_depth)
-
-    def test_water_timestep_drains_to_open_boundary(self) -> None:
-        grid = RasterGrid(
-            elevation=np.zeros((1, 1), dtype=np.float64),
+            elevation=np.zeros((1, 2), dtype=np.float64),
             dx=30,
             dy=30,
         )
@@ -155,17 +131,42 @@ class EngineTests(unittest.TestCase):
         )
         state.hydraulic.depth[0, 0] = 1.0
 
-        water_timestep(state, dt_seconds=5)
+        water_timestep(state, dt_seconds=1)
 
-        np.testing.assert_allclose(state.hydraulic.depth, np.array([[0.75]]))
+        self.assertGreater(state.hydraulic.qx[0, 1], 0)
+        self.assertEqual(state.hydraulic.qx[0, 0], 0)
+        self.assertEqual(state.hydraulic.qx[0, 2], 0)
+        self.assertLess(state.hydraulic.depth[0, 0], 1.0)
+        self.assertGreater(state.hydraulic.depth[0, 1], 0)
+        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 1.0)
 
-    def test_water_timestep_drains_to_invalid_neighbor(self) -> None:
+    def test_water_timestep_updates_north_south_flux_from_surface_slope(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((2, 1), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        state = SimulationState.dry(
+            grid,
+            manning_n=0.08,
+            runoff_coefficient=1.0,
+        )
+        state.hydraulic.depth[0, 0] = 1.0
+
+        water_timestep(state, dt_seconds=1)
+
+        self.assertGreater(state.hydraulic.qy[1, 0], 0)
+        self.assertEqual(state.hydraulic.qy[0, 0], 0)
+        self.assertEqual(state.hydraulic.qy[2, 0], 0)
+        self.assertLess(state.hydraulic.depth[0, 0], 1.0)
+        self.assertGreater(state.hydraulic.depth[1, 0], 0)
+        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 1.0)
+
+    def test_water_timestep_zeroes_dry_and_invalid_face_fluxes(self) -> None:
         grid = RasterGrid(
             elevation=np.array(
                 [
-                    [2, 2, 2],
-                    [2, 0, np.nan],
-                    [2, 2, 2],
+                    [0, np.nan],
                 ],
                 dtype=np.float64,
             ),
@@ -173,9 +174,7 @@ class EngineTests(unittest.TestCase):
             dy=30,
             valid_cells=np.array(
                 [
-                    [True, True, True],
-                    [True, True, False],
-                    [True, True, True],
+                    [True, False],
                 ]
             ),
         )
@@ -184,11 +183,32 @@ class EngineTests(unittest.TestCase):
             manning_n=0.08,
             runoff_coefficient=1.0,
         )
-        state.hydraulic.depth[1, 1] = 1.0
+        state.hydraulic.qx[0, 1] = 1.0
 
-        water_timestep(state, dt_seconds=5)
+        water_timestep(state, dt_seconds=1)
 
-        self.assertAlmostEqual(state.hydraulic.depth[1, 1], 0.75)
+        self.assertEqual(state.hydraulic.qx[0, 1], 0)
+        np.testing.assert_allclose(state.hydraulic.depth, np.array([[0, 0]]))
+
+    def test_water_timestep_limits_flux_to_available_depth(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 2), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        state = SimulationState.dry(
+            grid,
+            manning_n=0.0,
+            runoff_coefficient=1.0,
+        )
+        state.hydraulic.depth[0, 0] = 0.01
+        state.hydraulic.qx[0, 1] = 10.0
+
+        water_timestep(state, dt_seconds=10)
+
+        self.assertAlmostEqual(state.hydraulic.depth[0, 0], 0)
+        self.assertAlmostEqual(state.hydraulic.depth[0, 1], 0.01)
+        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 0.01)
 
 
 if __name__ == "__main__":

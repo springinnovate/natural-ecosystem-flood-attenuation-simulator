@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import rasterio
 from numpy.typing import NDArray
 
 FloatArray = NDArray[np.float64]
@@ -56,6 +55,8 @@ class RasterGrid:
     @classmethod
     def from_dem(cls, path: Path) -> RasterGrid:
         """Build a terrain grid from the first band of a DEM raster."""
+        import rasterio
+
         with rasterio.open(path) as source:
             elevation = source.read(1).astype(np.float64)
             valid_cells = source.read_masks(1) > 0
