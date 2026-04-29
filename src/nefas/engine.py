@@ -267,7 +267,12 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     eta = hydraulic.water_surface(grid)
 
     qx_old = hydraulic.qx[:, 1:-1]
-    h_face_x = face_depth_x(grid.elevation, eta)
+    # Face depth uses the higher adjacent terrain cell as the sill elevation.
+    h_face_x = np.maximum(
+        0,
+        np.maximum(eta[:, :-1], eta[:, 1:])
+        - np.maximum(grid.elevation[:, :-1], grid.elevation[:, 1:]),
+    )
     valid_x = grid.valid_cells[:, :-1] & grid.valid_cells[:, 1:]
     slope_x = (eta[:, 1:] - eta[:, :-1]) / grid.dx
     n_face_x = 0.5 * (surface.manning_n[:, :-1] + surface.manning_n[:, 1:])
@@ -283,7 +288,12 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     hydraulic.qx[:, -1] = 0
 
     qy_old = hydraulic.qy[1:-1, :]
-    h_face_y = face_depth_y(grid.elevation, eta)
+    # Face depth uses the higher adjacent terrain cell as the sill elevation.
+    h_face_y = np.maximum(
+        0,
+        np.maximum(eta[:-1, :], eta[1:, :])
+        - np.maximum(grid.elevation[:-1, :], grid.elevation[1:, :]),
+    )
     valid_y = grid.valid_cells[:-1, :] & grid.valid_cells[1:, :]
     slope_y = (eta[1:, :] - eta[:-1, :]) / grid.dy
     n_face_y = 0.5 * (surface.manning_n[:-1, :] + surface.manning_n[1:, :])
@@ -297,25 +307,6 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     )
     hydraulic.qy[0, :] = 0
     hydraulic.qy[-1, :] = 0
-
-
-def face_depth_x(elevation: np.ndarray, water_surface: np.ndarray) -> np.ndarray:
-    """Return representative depths at east-west interior faces."""
-    return np.maximum(
-        0,
-        np.maximum(water_surface[:, :-1], water_surface[:, 1:])
-        - np.maximum(elevation[:, :-1], elevation[:, 1:]),
-    )
-
-
-def face_depth_y(elevation: np.ndarray, water_surface: np.ndarray) -> np.ndarray:
-    """Return representative depths at north-south interior faces."""
-    return np.maximum(
-        0,
-        np.maximum(water_surface[:-1, :], water_surface[1:, :])
-        - np.maximum(elevation[:-1, :], elevation[1:, :]),
-    )
-
 
 def local_inertial_flux_update(
     *,
