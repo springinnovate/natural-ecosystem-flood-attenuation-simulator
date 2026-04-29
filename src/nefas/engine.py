@@ -284,8 +284,26 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
         valid_faces=valid_x,
         dt_seconds=dt_seconds,
     )
-    hydraulic.qx[:, 0] = 0
-    hydraulic.qx[:, -1] = 0
+
+    # Open boundaries are dry outside cells; outward flux leaves the domain.
+    left_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qx[:, 0],
+        face_depth=hydraulic.depth[:, 0],
+        slope=(eta[:, 0] - grid.elevation[:, 0]) / grid.dx,
+        manning_n=surface.manning_n[:, 0],
+        valid_faces=grid.valid_cells[:, 0],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qx[:, 0] = np.minimum(left_boundary_flux, 0)
+    right_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qx[:, -1],
+        face_depth=hydraulic.depth[:, -1],
+        slope=(grid.elevation[:, -1] - eta[:, -1]) / grid.dx,
+        manning_n=surface.manning_n[:, -1],
+        valid_faces=grid.valid_cells[:, -1],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qx[:, -1] = np.maximum(right_boundary_flux, 0)
 
     qy_old = hydraulic.qy[1:-1, :]
     # Face depth uses the higher adjacent terrain cell as the sill elevation.
@@ -305,8 +323,27 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
         valid_faces=valid_y,
         dt_seconds=dt_seconds,
     )
-    hydraulic.qy[0, :] = 0
-    hydraulic.qy[-1, :] = 0
+
+    # Open boundaries are dry outside cells; outward flux leaves the domain.
+    top_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qy[0, :],
+        face_depth=hydraulic.depth[0, :],
+        slope=(eta[0, :] - grid.elevation[0, :]) / grid.dy,
+        manning_n=surface.manning_n[0, :],
+        valid_faces=grid.valid_cells[0, :],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qy[0, :] = np.minimum(top_boundary_flux, 0)
+    bottom_boundary_flux = local_inertial_flux_update(
+        old_flux=hydraulic.qy[-1, :],
+        face_depth=hydraulic.depth[-1, :],
+        slope=(grid.elevation[-1, :] - eta[-1, :]) / grid.dy,
+        manning_n=surface.manning_n[-1, :],
+        valid_faces=grid.valid_cells[-1, :],
+        dt_seconds=dt_seconds,
+    )
+    hydraulic.qy[-1, :] = np.maximum(bottom_boundary_flux, 0)
+
 
 def local_inertial_flux_update(
     *,

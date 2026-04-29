@@ -120,7 +120,7 @@ class EngineTests(unittest.TestCase):
 
     def test_water_timestep_updates_east_west_flux_from_surface_slope(self) -> None:
         grid = RasterGrid(
-            elevation=np.zeros((1, 2), dtype=np.float64),
+            elevation=np.zeros((3, 4), dtype=np.float64),
             dx=30,
             dy=30,
         )
@@ -129,20 +129,38 @@ class EngineTests(unittest.TestCase):
             manning_n=0.08,
             runoff_coefficient=1.0,
         )
-        state.hydraulic.depth[0, 0] = 1.0
+        state.hydraulic.depth[1, 1] = 1.0
 
         water_timestep(state, dt_seconds=1)
 
-        self.assertGreater(state.hydraulic.qx[0, 1], 0)
-        self.assertEqual(state.hydraulic.qx[0, 0], 0)
-        self.assertEqual(state.hydraulic.qx[0, 2], 0)
-        self.assertLess(state.hydraulic.depth[0, 0], 1.0)
-        self.assertGreater(state.hydraulic.depth[0, 1], 0)
+        self.assertGreater(state.hydraulic.qx[1, 2], 0)
+        self.assertLess(state.hydraulic.depth[1, 1], 1.0)
+        self.assertGreater(state.hydraulic.depth[1, 2], 0)
         self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 1.0)
 
     def test_water_timestep_updates_north_south_flux_from_surface_slope(self) -> None:
         grid = RasterGrid(
-            elevation=np.zeros((2, 1), dtype=np.float64),
+            elevation=np.zeros((4, 3), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        state = SimulationState.dry(
+            grid,
+            manning_n=0.08,
+            runoff_coefficient=1.0,
+        )
+        state.hydraulic.depth[1, 1] = 1.0
+
+        water_timestep(state, dt_seconds=1)
+
+        self.assertGreater(state.hydraulic.qy[2, 1], 0)
+        self.assertLess(state.hydraulic.depth[1, 1], 1.0)
+        self.assertGreater(state.hydraulic.depth[2, 1], 0)
+        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 1.0)
+
+    def test_water_timestep_routes_boundary_flux_out_of_domain(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 1), dtype=np.float64),
             dx=30,
             dy=30,
         )
@@ -155,12 +173,11 @@ class EngineTests(unittest.TestCase):
 
         water_timestep(state, dt_seconds=1)
 
+        self.assertLess(state.hydraulic.qx[0, 0], 0)
+        self.assertGreater(state.hydraulic.qx[0, 1], 0)
+        self.assertLess(state.hydraulic.qy[0, 0], 0)
         self.assertGreater(state.hydraulic.qy[1, 0], 0)
-        self.assertEqual(state.hydraulic.qy[0, 0], 0)
-        self.assertEqual(state.hydraulic.qy[2, 0], 0)
-        self.assertLess(state.hydraulic.depth[0, 0], 1.0)
-        self.assertGreater(state.hydraulic.depth[1, 0], 0)
-        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 1.0)
+        self.assertLess(float(state.hydraulic.depth.sum()), 1.0)
 
     def test_water_timestep_zeroes_dry_and_invalid_face_fluxes(self) -> None:
         grid = RasterGrid(
