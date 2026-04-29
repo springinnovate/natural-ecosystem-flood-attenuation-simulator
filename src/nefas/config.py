@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 15.0
+
 
 class ConfigError(ValueError):
     """Raised when a simulation configuration does not match the schema."""
@@ -128,7 +130,10 @@ def _snapshot_config(section: dict[str, Any]) -> SnapshotConfig:
     if not isinstance(directory, str) or not directory.strip():
         raise ConfigError("output.snapshots.directory must be a non-empty path string.")
 
-    interval_minutes = snapshots.get("interval_minutes", 15)
+    interval_minutes = snapshots.get(
+        "interval_minutes",
+        DEFAULT_SNAPSHOT_INTERVAL_MINUTES,
+    )
     return SnapshotConfig(
         directory=Path(directory),
         interval_minutes=_float({"interval_minutes": interval_minutes}, "interval_minutes", positive=True),

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from nefas.config import ConfigError, parse_config
+from nefas.config import DEFAULT_SNAPSHOT_INTERVAL_MINUTES, ConfigError, parse_config
 
 
 class ConfigParsingTests(unittest.TestCase):
@@ -71,7 +71,10 @@ class ConfigParsingTests(unittest.TestCase):
 
         self.assertEqual(config.processing.area_of_interest.filters, {})
         self.assertEqual(config.output.snapshots.directory, Path("snapshots"))
-        self.assertEqual(config.output.snapshots.interval_minutes, 15)
+        self.assertEqual(
+            config.output.snapshots.interval_minutes,
+            DEFAULT_SNAPSHOT_INTERVAL_MINUTES,
+        )
 
     def test_requires_rainfall_series(self) -> None:
         with self.assertRaises(ConfigError):

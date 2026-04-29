@@ -29,5 +29,5 @@ def main() -> int:
         LOGGER.error("%s", exc)
         return 1
 
-    LOGGER.info("Rainfall-only simulation is complete.")
+    LOGGER.info("Simulation is complete.")
     return 0
