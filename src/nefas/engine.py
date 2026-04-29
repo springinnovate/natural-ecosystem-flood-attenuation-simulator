@@ -6,16 +6,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import geopandas as gpd
+import matplotlib
 import numpy as np
+import rasterio
+from matplotlib import pyplot as plt
+from rasterio.features import rasterize
 
 from .config import RainfallConfig, SimulationConfig
+from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
-if TYPE_CHECKING:
-    from .preprocessing import IntermediateOutputs
-
+matplotlib.use("Agg")
 LOGGER = logging.getLogger(__name__)
 GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
 DRY_DEPTH_METERS = 0.001
@@ -143,10 +146,6 @@ def timestep_duration_seconds(
 
 def storm_footprint_mask(storm_footprint: Path, template_raster: Path) -> np.ndarray:
     """Rasterize the storm footprint onto the clipped DEM grid."""
-    import geopandas as gpd
-    import rasterio
-    from rasterio.features import rasterize
-
     storm = gpd.read_file(storm_footprint)
     if storm.empty:
         raise RuntimeError("Storm footprint does not contain any features.")
@@ -422,11 +421,6 @@ def render_snapshot(
     elapsed_minutes: float,
 ) -> None:
     """Render DEM, storm footprint, and water depth into a PNG image."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    from matplotlib import pyplot as plt
-
     figure, axis = plt.subplots(figsize=(8, 6), dpi=150)
     axis.imshow(np.ma.masked_invalid(grid.elevation), cmap="gray")
     axis.imshow(np.where(storm_mask, 1.0, np.nan), cmap="Blues", alpha=0.22, vmin=0, vmax=1)
