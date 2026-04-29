@@ -41,11 +41,9 @@ class RasterGridTests(unittest.TestCase):
             grid = RasterGrid.from_dem(path)
 
         self.assertEqual(grid.shape, (2, 3))
-        self.assertEqual(grid.x_face_shape, (2, 4))
-        self.assertEqual(grid.y_face_shape, (3, 3))
         self.assertEqual(grid.dx, 30)
         self.assertEqual(grid.dy, 30)
-        self.assertFalse(bool(grid.active[0, 2]))
+        self.assertFalse(bool(grid.valid_cells[0, 2]))
         self.assertTrue(np.isnan(grid.elevation[0, 2]))
 
 
@@ -71,8 +69,8 @@ class SimulationStateTests(unittest.TestCase):
         )
 
         self.assertEqual(state.hydraulic.depth.shape, grid.shape)
-        self.assertEqual(state.hydraulic.qx.shape, grid.x_face_shape)
-        self.assertEqual(state.hydraulic.qy.shape, grid.y_face_shape)
+        self.assertEqual(state.hydraulic.qx.shape, (grid.ny, grid.nx + 1))
+        self.assertEqual(state.hydraulic.qy.shape, (grid.ny + 1, grid.nx))
         self.assertEqual(state.diagnostics.arrival_time.shape, grid.shape)
         self.assertTrue(np.all(state.hydraulic.depth == 0))
         self.assertTrue(np.all(state.hydraulic.qx == 0))

@@ -16,7 +16,7 @@ class RasterGrid:
     """Terrain grid used by the finite-volume solver.
 
     The simulation itself only needs the terrain elevations, cell spacing, and
-    active-cell mask. Geospatial metadata stays outside this object so the
+    valid-cell mask. Geospatial metadata stays outside this object so the
     numerical state remains focused on array calculations.
     """
 
@@ -27,16 +27,16 @@ class RasterGrid:
     # Cell height in the y direction, in meters.
     dy: float
     # True where the DEM has valid data and the solver should update cells.
-    active: BoolArray | None = None
+    valid_cells: BoolArray | None = None
 
     def __post_init__(self) -> None:
-        """Normalize elevation and active-mask arrays to solver dtypes."""
+        """Normalize elevation and valid-cell arrays to solver dtypes."""
         elevation = np.asarray(self.elevation, dtype=np.float64)
         object.__setattr__(self, "elevation", elevation)
-        if self.active is None:
-            object.__setattr__(self, "active", np.isfinite(elevation))
+        if self.valid_cells is None:
+            object.__setattr__(self, "valid_cells", np.isfinite(elevation))
         else:
-            object.__setattr__(self, "active", np.asarray(self.active, dtype=bool))
+            object.__setattr__(self, "valid_cells", np.asarray(self.valid_cells, dtype=bool))
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -53,30 +53,20 @@ class RasterGrid:
         """Number of columns in the cell-centered grid."""
         return self.shape[1]
 
-    @property
-    def x_face_shape(self) -> tuple[int, int]:
-        """Shape for east-west face fluxes, including boundary faces."""
-        return self.ny, self.nx + 1
-
-    @property
-    def y_face_shape(self) -> tuple[int, int]:
-        """Shape for north-south face fluxes, including boundary faces."""
-        return self.ny + 1, self.nx
-
     @classmethod
     def from_dem(cls, path: Path) -> RasterGrid:
         """Build a terrain grid from the first band of a DEM raster."""
         with rasterio.open(path) as source:
             elevation = source.read(1).astype(np.float64)
-            active = source.read_masks(1) > 0
+            valid_cells = source.read_masks(1) > 0
             if source.nodata is not None:
-                active &= elevation != source.nodata
+                valid_cells &= elevation != source.nodata
 
             return cls(
-                elevation=np.where(active, elevation, np.nan),
+                elevation=np.where(valid_cells, elevation, np.nan),
                 dx=abs(source.transform.a),
                 dy=abs(source.transform.e),
-                active=active,
+                valid_cells=valid_cells,
             )
 
 
@@ -121,8 +111,8 @@ class HydraulicState:
         """Create a zero-depth, zero-flux hydraulic state for a grid."""
         return cls(
             depth=np.zeros(grid.shape, dtype=np.float64),
-            qx=np.zeros(grid.x_face_shape, dtype=np.float64),
-            qy=np.zeros(grid.y_face_shape, dtype=np.float64),
+            qx=np.zeros((grid.ny, grid.nx + 1), dtype=np.float64),
+            qy=np.zeros((grid.ny + 1, grid.nx), dtype=np.float64),
         )
 
     def water_surface(self, grid: RasterGrid) -> FloatArray:
