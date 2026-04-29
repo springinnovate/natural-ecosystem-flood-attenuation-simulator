@@ -58,6 +58,7 @@ def run_simulation(
             state,
             snapshot_directory,
             index=0,
+            max_depth_meters=config.output.snapshots.max_depth_meters,
         )
     ]
     next_snapshot_seconds = min(snapshot_interval_seconds, duration_seconds)
@@ -86,6 +87,7 @@ def run_simulation(
                         state,
                         snapshot_directory,
                         index=len(snapshots),
+                        max_depth_meters=config.output.snapshots.max_depth_meters,
                     )
                 )
                 progress.set_postfix(snapshots=len(snapshots))
@@ -429,6 +431,7 @@ def write_snapshot(
     state: SimulationState,
     snapshot_directory: Path,
     index: int,
+    max_depth_meters: float | None = None,
 ) -> Path:
     """Write one simulation snapshot and return its path."""
     snapshot = snapshot_directory / f"snapshot_{index:04d}.png"
@@ -438,6 +441,7 @@ def write_snapshot(
         state.hydraulic.depth,
         snapshot,
         elapsed_minutes=state.hydraulic.time_seconds / 60,
+        max_depth_meters=max_depth_meters,
     )
     return snapshot
 
@@ -448,6 +452,7 @@ def render_snapshot(
     depth: np.ndarray,
     path: Path,
     elapsed_minutes: float,
+    max_depth_meters: float | None = None,
 ) -> None:
     """Render DEM, storm footprint, and water depth into a PNG image."""
     figure, axis = plt.subplots(figsize=(8, 6), dpi=150)
@@ -455,7 +460,10 @@ def render_snapshot(
     axis.imshow(np.where(storm_mask, 1.0, np.nan), cmap="Blues", alpha=0.22, vmin=0, vmax=1)
 
     depth_layer = np.ma.masked_where(depth <= 0, depth)
-    water = axis.imshow(depth_layer, cmap="turbo", alpha=0.75)
+    depth_scale = {}
+    if max_depth_meters is not None:
+        depth_scale = {"vmin": 0, "vmax": max_depth_meters}
+    water = axis.imshow(depth_layer, cmap="turbo", alpha=0.75, **depth_scale)
     if np.nanmax(depth) > 0:
         colorbar = figure.colorbar(water, ax=axis, fraction=0.046, pad=0.04)
         colorbar.set_label("Water depth (m)")

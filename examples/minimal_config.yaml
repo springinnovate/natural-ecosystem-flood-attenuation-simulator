@@ -27,6 +27,7 @@ output:
   snapshots:
     directory: snapshots
     interval_minutes: 15
+    max_depth_meters: 1.0
 
 processing:
   area_of_interest:
