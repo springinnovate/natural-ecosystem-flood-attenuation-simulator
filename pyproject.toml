@@ -9,7 +9,9 @@ description = "Natural Ecosystem Flood Attenuation Simulator"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "geopandas>=0.14",
     "PyYAML>=6.0",
+    "rasterio>=1.3",
     "tqdm>=4.66",
 ]
 

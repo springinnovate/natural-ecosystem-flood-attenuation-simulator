@@ -39,11 +39,22 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class AreaOfInterestProcessingConfig:
+    filters: dict[str, str | int | float | bool]
+
+
+@dataclass(frozen=True)
+class ProcessingConfig:
+    area_of_interest: AreaOfInterestProcessingConfig
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     inputs: InputConfig
     rainfall: RainfallConfig
     time_step: TimeStepConfig
     output: OutputConfig
+    processing: ProcessingConfig
 
 
 def load_config(path: Path) -> SimulationConfig:
@@ -64,6 +75,7 @@ def parse_config(raw: Any) -> SimulationConfig:
     rainfall = _mapping(root.get("rainfall"), "rainfall")
     time_step = _mapping(root.get("time_step"), "time_step")
     output = _mapping(root.get("output"), "output")
+    processing = _optional_mapping(root.get("processing"), "processing")
 
     return SimulationConfig(
         inputs=InputConfig(
@@ -77,6 +89,11 @@ def parse_config(raw: Any) -> SimulationConfig:
             max_seconds=_optional_float(time_step, "max_seconds", positive=True),
         ),
         output=OutputConfig(directory=_path(output, "directory")),
+        processing=ProcessingConfig(
+            area_of_interest=AreaOfInterestProcessingConfig(
+                filters=_area_of_interest_filters(processing)
+            )
+        ),
     )
 
 
@@ -86,11 +103,33 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
+def _optional_mapping(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    return _mapping(value, name)
+
+
 def _path(section: dict[str, Any], key: str) -> Path:
     value = section.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{key} must be a non-empty path string.")
     return Path(value)
+
+
+def _area_of_interest_filters(section: dict[str, Any]) -> dict[str, str | int | float | bool]:
+    area_of_interest = _optional_mapping(section.get("area_of_interest"), "processing.area_of_interest")
+    filters = area_of_interest.get("filters", {})
+    if filters is None:
+        return {}
+    filters = _mapping(filters, "processing.area_of_interest.filters")
+
+    for key, value in filters.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ConfigError("AOI filter names must be non-empty strings.")
+        if not isinstance(value, str | int | float | bool):
+            raise ConfigError(f"AOI filter {key} must be a scalar value.")
+
+    return filters
 
 
 def _rainfall_series(section: dict[str, Any]) -> tuple[RainfallPoint, ...]:
