@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,34 +59,38 @@ def run_simulation(
         )
     ]
     next_snapshot_seconds = min(snapshot_interval_seconds, duration_seconds)
-    while state.hydraulic.time_seconds < duration_seconds:
-        dt_seconds = timestep_duration_seconds(
-            current_time_seconds=state.hydraulic.time_seconds,
-            duration_seconds=duration_seconds,
-            next_snapshot_seconds=next_snapshot_seconds,
-            nominal_time_step_seconds=config.time_step.seconds,
-        )
-        run_timestep(
-            state,
-            config.rainfall,
-            storm_mask,
-            dt_seconds,
-        )
+    with simulation_progress(duration_seconds) as progress:
+        while state.hydraulic.time_seconds < duration_seconds:
+            previous_time_seconds = state.hydraulic.time_seconds
+            dt_seconds = timestep_duration_seconds(
+                current_time_seconds=state.hydraulic.time_seconds,
+                duration_seconds=duration_seconds,
+                next_snapshot_seconds=next_snapshot_seconds,
+                nominal_time_step_seconds=config.time_step.seconds,
+            )
+            run_timestep(
+                state,
+                config.rainfall,
+                storm_mask,
+                dt_seconds,
+            )
+            progress.update(state.hydraulic.time_seconds - previous_time_seconds)
 
-        if state.hydraulic.time_seconds >= next_snapshot_seconds:
-            snapshots.append(
-                write_snapshot(
-                    grid,
-                    storm_mask,
-                    state,
-                    snapshot_directory,
-                    index=len(snapshots),
+            if state.hydraulic.time_seconds >= next_snapshot_seconds:
+                snapshots.append(
+                    write_snapshot(
+                        grid,
+                        storm_mask,
+                        state,
+                        snapshot_directory,
+                        index=len(snapshots),
+                    )
                 )
-            )
-            next_snapshot_seconds = min(
-                next_snapshot_seconds + snapshot_interval_seconds,
-                duration_seconds,
-            )
+                progress.set_postfix(snapshots=len(snapshots))
+                next_snapshot_seconds = min(
+                    next_snapshot_seconds + snapshot_interval_seconds,
+                    duration_seconds,
+                )
 
     LOGGER.info("Wrote %s simulation snapshots to %s", len(snapshots), snapshot_directory)
     return SimulationRunResult(
@@ -98,6 +105,23 @@ def resolve_snapshot_directory(snapshot_directory: Path, workspace: Path) -> Pat
     if snapshot_directory.is_absolute():
         return snapshot_directory
     return workspace / snapshot_directory
+
+
+@contextmanager
+def simulation_progress(duration_seconds: float) -> Iterator[object]:
+    """Yield a model-time progress bar for long-running simulation loops."""
+    try:
+        from tqdm import tqdm
+    except ImportError as exc:
+        raise RuntimeError("tqdm is required for simulation progress reporting.") from exc
+
+    with tqdm(
+        total=duration_seconds,
+        desc="Simulating",
+        unit="model s",
+        disable=not sys.stderr.isatty(),
+    ) as progress:
+        yield progress
 
 
 def rainfall_duration_seconds(rainfall: RainfallConfig) -> float:
