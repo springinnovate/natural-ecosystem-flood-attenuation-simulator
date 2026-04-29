@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import geopandas as gpd
+import rasterio
+from rasterio.mask import mask
+
 from .config import SimulationConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -23,13 +27,6 @@ def intermediate_workspace(config_path: Path, output_directory: Path) -> Path:
 
 
 def prepare_intermediates(config: SimulationConfig, config_path: Path) -> IntermediateOutputs:
-    try:
-        import geopandas as gpd
-        import rasterio
-        from rasterio.mask import mask
-    except ImportError as exc:
-        raise RuntimeError("geopandas and rasterio are required for input preprocessing.") from exc
-
     workspace = intermediate_workspace(config_path, config.output.directory)
     workspace.mkdir(parents=True, exist_ok=True)
 

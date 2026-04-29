@@ -75,7 +75,8 @@ def parse_config(raw: Any) -> SimulationConfig:
     rainfall = _mapping(root.get("rainfall"), "rainfall")
     time_step = _mapping(root.get("time_step"), "time_step")
     output = _mapping(root.get("output"), "output")
-    processing = _optional_mapping(root.get("processing"), "processing")
+    processing = root.get("processing") or {}
+    processing = _mapping(processing, "processing")
 
     return SimulationConfig(
         inputs=InputConfig(
@@ -103,12 +104,6 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
-def _optional_mapping(value: Any, name: str) -> dict[str, Any]:
-    if value is None:
-        return {}
-    return _mapping(value, name)
-
-
 def _path(section: dict[str, Any], key: str) -> Path:
     value = section.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -117,11 +112,8 @@ def _path(section: dict[str, Any], key: str) -> Path:
 
 
 def _area_of_interest_filters(section: dict[str, Any]) -> dict[str, str | int | float | bool]:
-    area_of_interest = _optional_mapping(section.get("area_of_interest"), "processing.area_of_interest")
-    filters = area_of_interest.get("filters", {})
-    if filters is None:
-        return {}
-    filters = _mapping(filters, "processing.area_of_interest.filters")
+    area_of_interest = section.get("area_of_interest") or {}
+    filters = area_of_interest.get("filters") or {}
 
     for key, value in filters.items():
         if not isinstance(key, str) or not key.strip():
