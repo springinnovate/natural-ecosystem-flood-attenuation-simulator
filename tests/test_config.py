@@ -12,8 +12,8 @@ class ConfigParsingTests(unittest.TestCase):
             {
                 "inputs": {
                     "dem": "data/dem.tif",
-                    "area_of_interest": "data/aoi.geojson",
-                    "storm_footprint": "data/storm.geojson",
+                    "area_of_interest": "data/aoi.gpkg",
+                    "storm_footprint": "data/storm.gpkg",
                 },
                 "rainfall": {
                     "series": [
@@ -37,8 +37,8 @@ class ConfigParsingTests(unittest.TestCase):
                 {
                     "inputs": {
                         "dem": "data/dem.tif",
-                        "area_of_interest": "data/aoi.geojson",
-                        "storm_footprint": "data/storm.geojson",
+                        "area_of_interest": "data/aoi.gpkg",
+                        "storm_footprint": "data/storm.gpkg",
                     },
                     "rainfall": {"series": []},
                     "time_step": {"seconds": 5},

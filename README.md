@@ -15,5 +15,3 @@ Prepare a model run from a YAML configuration:
 ```powershell
 python run_model.py examples/minimal_config.yaml
 ```
-
-The initial entry point validates the configuration shape, creates the configured output directory, logs setup progress, and exits without running a simulation.

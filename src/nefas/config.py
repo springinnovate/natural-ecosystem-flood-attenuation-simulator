@@ -73,8 +73,8 @@ def parse_config(raw: Any) -> SimulationConfig:
         ),
         rainfall=RainfallConfig(series=_rainfall_series(rainfall)),
         time_step=TimeStepConfig(
-            seconds=_positive_number(time_step, "seconds"),
-            max_seconds=_optional_positive_number(time_step, "max_seconds"),
+            seconds=_float(time_step, "seconds", positive=True),
+            max_seconds=_optional_float(time_step, "max_seconds", positive=True),
         ),
         output=OutputConfig(directory=_path(output, "directory")),
     )
@@ -103,36 +103,28 @@ def _rainfall_series(section: dict[str, Any]) -> tuple[RainfallPoint, ...]:
         point = _mapping(item, f"rainfall.series[{index}]")
         points.append(
             RainfallPoint(
-                time_minutes=_non_negative_number(point, "time_minutes"),
-                rate_mm_per_hr=_non_negative_number(point, "rate_mm_per_hr"),
+                time_minutes=_float(point, "time_minutes"),
+                rate_mm_per_hr=_float(point, "rate_mm_per_hr"),
             )
         )
 
     return tuple(points)
 
 
-def _optional_positive_number(section: dict[str, Any], key: str) -> float | None:
+def _optional_float(section: dict[str, Any], key: str, *, positive: bool = False) -> float | None:
     if key not in section or section[key] is None:
         return None
-    return _positive_number(section, key)
+    return _float(section, key, positive=positive)
 
 
-def _positive_number(section: dict[str, Any], key: str) -> float:
-    value = _number(section, key)
-    if value <= 0:
+def _float(section: dict[str, Any], key: str, *, positive: bool = False) -> float:
+    try:
+        value = float(section[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"{key} must be numeric.") from exc
+
+    if positive and value <= 0:
         raise ConfigError(f"{key} must be greater than zero.")
-    return value
-
-
-def _non_negative_number(section: dict[str, Any], key: str) -> float:
-    value = _number(section, key)
-    if value < 0:
+    if not positive and value < 0:
         raise ConfigError(f"{key} must be zero or greater.")
     return value
-
-
-def _number(section: dict[str, Any], key: str) -> float:
-    value = section.get(key)
-    if not isinstance(value, int | float):
-        raise ConfigError(f"{key} must be numeric.")
-    return float(value)

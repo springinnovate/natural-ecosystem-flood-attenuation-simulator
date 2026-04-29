@@ -1,7 +1,7 @@
 inputs:
   dem: data/dem.tif
-  area_of_interest: data/area_of_interest.geojson
-  storm_footprint: data/storm_footprint.geojson
+  area_of_interest: data/area_of_interest.gpkg
+  storm_footprint: data/storm_footprint.gpkg
 
 rainfall:
   series:
