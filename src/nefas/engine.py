@@ -11,7 +11,6 @@ import geopandas as gpd
 import matplotlib
 import numpy as np
 import rasterio
-from matplotlib import pyplot as plt
 from rasterio.features import rasterize
 
 from .config import RainfallConfig, SimulationConfig
@@ -19,6 +18,8 @@ from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
 matplotlib.use("Agg")
+from matplotlib import pyplot as plt
+
 LOGGER = logging.getLogger(__name__)
 GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
 DRY_DEPTH_METERS = 0.001
