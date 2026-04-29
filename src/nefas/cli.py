@@ -29,5 +29,5 @@ def main() -> int:
         LOGGER.error("%s", exc)
         return 1
 
-    LOGGER.info("Configuration is valid. No simulation was run.")
+    LOGGER.info("Input preprocessing is complete. No simulation was run.")
     return 0

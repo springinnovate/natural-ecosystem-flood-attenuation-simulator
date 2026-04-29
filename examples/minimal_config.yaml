@@ -24,3 +24,8 @@ time_step:
 
 output:
   directory: outputs/example
+
+processing:
+  area_of_interest:
+    filters:
+      name: United States
