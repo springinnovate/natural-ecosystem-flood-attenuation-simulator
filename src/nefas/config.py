@@ -34,8 +34,15 @@ class TimeStepConfig:
 
 
 @dataclass(frozen=True)
+class SnapshotConfig:
+    directory: Path
+    interval_minutes: float
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     directory: Path
+    snapshots: SnapshotConfig
 
 
 @dataclass(frozen=True)
@@ -89,7 +96,10 @@ def parse_config(raw: Any) -> SimulationConfig:
             seconds=_float(time_step, "seconds", positive=True),
             max_seconds=_optional_float(time_step, "max_seconds", positive=True),
         ),
-        output=OutputConfig(directory=_path(output, "directory")),
+        output=OutputConfig(
+            directory=_path(output, "directory"),
+            snapshots=_snapshot_config(output),
+        ),
         processing=ProcessingConfig(
             area_of_interest=AreaOfInterestProcessingConfig(
                 filters=_area_of_interest_filters(processing)
@@ -109,6 +119,20 @@ def _path(section: dict[str, Any], key: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{key} must be a non-empty path string.")
     return Path(value)
+
+
+def _snapshot_config(section: dict[str, Any]) -> SnapshotConfig:
+    snapshots = section.get("snapshots") or {}
+    snapshots = _mapping(snapshots, "output.snapshots")
+    directory = snapshots.get("directory", "snapshots")
+    if not isinstance(directory, str) or not directory.strip():
+        raise ConfigError("output.snapshots.directory must be a non-empty path string.")
+
+    interval_minutes = snapshots.get("interval_minutes", 15)
+    return SnapshotConfig(
+        directory=Path(directory),
+        interval_minutes=_float({"interval_minutes": interval_minutes}, "interval_minutes", positive=True),
+    )
 
 
 def _area_of_interest_filters(section: dict[str, Any]) -> dict[str, str | int | float | bool]:
