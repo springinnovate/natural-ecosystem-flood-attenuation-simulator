@@ -1,0 +1,26 @@
+inputs:
+  dem: data/dem.tif
+  area_of_interest: data/area_of_interest.geojson
+  storm_footprint: data/storm_footprint.geojson
+
+rainfall:
+  series:
+    - time_minutes: 0
+      rate_mm_per_hr: 0
+    - time_minutes: 15
+      rate_mm_per_hr: 10
+    - time_minutes: 30
+      rate_mm_per_hr: 30
+    - time_minutes: 45
+      rate_mm_per_hr: 60
+    - time_minutes: 60
+      rate_mm_per_hr: 25
+    - time_minutes: 90
+      rate_mm_per_hr: 5
+
+time_step:
+  seconds: 5
+  max_seconds: 30
+
+output:
+  directory: outputs/example
