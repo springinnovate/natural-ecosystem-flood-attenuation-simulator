@@ -21,6 +21,11 @@ from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
 LOGGER = logging.getLogger(__name__)
+OPEN_BOUNDARY_DROP_METERS = 1.0
+SIMPLE_WATER_TRANSFER_FRACTION_PER_SECOND = 0.05
+NEIGHBOR_OFFSETS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+CellIndex = tuple[int, int]
+Receiver = tuple[CellIndex | None, float]
 
 
 @dataclass(frozen=True)
@@ -252,8 +257,85 @@ def add_rainfall_depth(
 
 
 def water_timestep(state: SimulationState, dt_seconds: float) -> None:
-    """Move water during one timestep once the finite-volume solver exists."""
-    pass
+    """Move a capped fraction of water to lower neighboring cells."""
+    depth = state.hydraulic.depth
+    valid_cells = state.grid.valid_cells
+    wet_cells = valid_cells & (depth > 0)
+    if not wet_cells.any():
+        return
+
+    transfer_fraction = simple_water_transfer_fraction(dt_seconds)
+    water_surface = state.hydraulic.water_surface(state.grid)
+    boundary_surface = open_boundary_surface(state.grid)
+    outflow = np.zeros_like(depth)
+    inflow = np.zeros_like(depth)
+
+    for row, col in np.argwhere(wet_cells):
+        receivers = lower_receivers(
+            state.grid,
+            water_surface,
+            row=int(row),
+            col=int(col),
+            boundary_surface=boundary_surface,
+        )
+        if not receivers:
+            continue
+
+        transfer_depth = depth[row, col] * transfer_fraction
+        total_drop = sum(drop for _, drop in receivers)
+        outflow[row, col] += transfer_depth
+        for receiver, drop in receivers:
+            if receiver is None:
+                continue
+            receiver_row, receiver_col = receiver
+            inflow[receiver_row, receiver_col] += transfer_depth * (drop / total_drop)
+
+    depth += inflow - outflow
+    np.maximum(depth, 0, out=depth)
+
+
+def open_boundary_surface(grid: RasterGrid) -> float:
+    """Return the synthetic low surface used for open boundaries and nodata."""
+    return float(np.nanmin(grid.elevation[grid.valid_cells]) - OPEN_BOUNDARY_DROP_METERS)
+
+
+def simple_water_transfer_fraction(dt_seconds: float) -> float:
+    """Return the hard-coded water fraction allowed to move this timestep."""
+    return min(1.0, SIMPLE_WATER_TRANSFER_FRACTION_PER_SECOND * dt_seconds)
+
+
+def lower_receivers(
+    grid: RasterGrid,
+    water_surface: np.ndarray,
+    row: int,
+    col: int,
+    boundary_surface: float,
+) -> list[Receiver]:
+    """Return lower valid neighbors and open-boundary sinks for a cell."""
+    current_surface = water_surface[row, col]
+    receivers: list[Receiver] = []
+    for row_offset, col_offset in NEIGHBOR_OFFSETS:
+        neighbor_row = row + row_offset
+        neighbor_col = col + col_offset
+        neighbor = neighbor_index(grid, neighbor_row, neighbor_col)
+        neighbor_surface = (
+            boundary_surface
+            if neighbor is None
+            else water_surface[neighbor_row, neighbor_col]
+        )
+        drop = current_surface - neighbor_surface
+        if drop > 0:
+            receivers.append((neighbor, float(drop)))
+    return receivers
+
+
+def neighbor_index(grid: RasterGrid, row: int, col: int) -> CellIndex | None:
+    """Return a valid neighbor index, or none for open boundary drainage."""
+    if row < 0 or col < 0 or row >= grid.ny or col >= grid.nx:
+        return None
+    if not grid.valid_cells[row, col]:
+        return None
+    return row, col
 
 
 def update_diagnostics(state: SimulationState, dt_seconds: float) -> None:

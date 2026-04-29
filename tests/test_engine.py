@@ -10,6 +10,7 @@ from nefas.engine import (
     apply_rainfall_forcing,
     rainfall_rate_m_per_second,
     timestep_duration_seconds,
+    water_timestep,
 )
 from nefas.simulation import RasterGrid, SimulationState
 
@@ -116,6 +117,78 @@ class EngineTests(unittest.TestCase):
         )
 
         np.testing.assert_allclose(state.hydraulic.depth, np.array([[0.01, 0]]))
+
+    def test_water_timestep_moves_water_to_lower_neighbors(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((3, 3), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        state = SimulationState.dry(
+            grid,
+            manning_n=0.08,
+            runoff_coefficient=1.0,
+        )
+        state.hydraulic.depth[1, 1] = 1.0
+
+        water_timestep(state, dt_seconds=5)
+
+        expected_depth = np.array(
+            [
+                [0, 0.0625, 0],
+                [0.0625, 0.75, 0.0625],
+                [0, 0.0625, 0],
+            ]
+        )
+        np.testing.assert_allclose(state.hydraulic.depth, expected_depth)
+
+    def test_water_timestep_drains_to_open_boundary(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 1), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        state = SimulationState.dry(
+            grid,
+            manning_n=0.08,
+            runoff_coefficient=1.0,
+        )
+        state.hydraulic.depth[0, 0] = 1.0
+
+        water_timestep(state, dt_seconds=5)
+
+        np.testing.assert_allclose(state.hydraulic.depth, np.array([[0.75]]))
+
+    def test_water_timestep_drains_to_invalid_neighbor(self) -> None:
+        grid = RasterGrid(
+            elevation=np.array(
+                [
+                    [2, 2, 2],
+                    [2, 0, np.nan],
+                    [2, 2, 2],
+                ],
+                dtype=np.float64,
+            ),
+            dx=30,
+            dy=30,
+            valid_cells=np.array(
+                [
+                    [True, True, True],
+                    [True, True, False],
+                    [True, True, True],
+                ]
+            ),
+        )
+        state = SimulationState.dry(
+            grid,
+            manning_n=0.08,
+            runoff_coefficient=1.0,
+        )
+        state.hydraulic.depth[1, 1] = 1.0
+
+        water_timestep(state, dt_seconds=5)
+
+        self.assertAlmostEqual(state.hydraulic.depth[1, 1], 0.75)
 
 
 if __name__ == "__main__":
