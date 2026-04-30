@@ -27,6 +27,7 @@ class ConfigParsingTests(unittest.TestCase):
                     "snapshots": {
                         "directory": "frames",
                         "interval_minutes": 10,
+                        "max_depth_meters": 1.5,
                     },
                 },
                 "processing": {
@@ -46,6 +47,7 @@ class ConfigParsingTests(unittest.TestCase):
         self.assertEqual(config.output.directory, Path("outputs/example"))
         self.assertEqual(config.output.snapshots.directory, Path("frames"))
         self.assertEqual(config.output.snapshots.interval_minutes, 10)
+        self.assertEqual(config.output.snapshots.max_depth_meters, 1.5)
         self.assertEqual(
             config.processing.area_of_interest.filters,
             {"name": "United States", "FID": 3283},
@@ -75,6 +77,7 @@ class ConfigParsingTests(unittest.TestCase):
             config.output.snapshots.interval_minutes,
             DEFAULT_SNAPSHOT_INTERVAL_MINUTES,
         )
+        self.assertIsNone(config.output.snapshots.max_depth_meters)
 
     def test_requires_rainfall_series(self) -> None:
         with self.assertRaises(ConfigError):
