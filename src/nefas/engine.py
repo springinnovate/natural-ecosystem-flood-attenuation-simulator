@@ -15,6 +15,13 @@ from .config import RainfallConfig, SimulationConfig
 from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
+try:
+    from line_profiler import profile
+except ImportError:
+    def profile(function):
+        return function
+
+
 matplotlib.use("Agg")
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib import pyplot as plt
@@ -275,6 +282,7 @@ def add_rainfall_depth(
     )
 
 
+@profile
 def water_timestep(state: SimulationState, dt_seconds: float) -> None:
     """Advance water depth with vectorized local-inertial face fluxes."""
     update_face_fluxes(state, dt_seconds)
@@ -282,6 +290,7 @@ def water_timestep(state: SimulationState, dt_seconds: float) -> None:
     update_depth_from_fluxes(state, dt_seconds)
 
 
+@profile
 def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     """Update interior face fluxes from water-surface slope and Manning friction."""
     grid = state.grid
@@ -393,6 +402,7 @@ def local_inertial_flux_update(
     return np.where(valid_faces & (face_depth >= DRY_DEPTH_METERS), flux, 0)
 
 
+@profile
 def limit_outgoing_fluxes(state: SimulationState, dt_seconds: float) -> None:
     """Scale outgoing face fluxes so no cell can lose more water than it stores."""
     depth = state.hydraulic.depth
@@ -419,6 +429,7 @@ def limit_outgoing_fluxes(state: SimulationState, dt_seconds: float) -> None:
     qy[-1, :] *= np.where(qy[-1, :] >= 0, scale[-1, :], 1)
 
 
+@profile
 def update_depth_from_fluxes(state: SimulationState, dt_seconds: float) -> None:
     """Update cell depths from vectorized face-flux divergence."""
     depth = state.hydraulic.depth
@@ -465,6 +476,7 @@ def write_snapshot(
     return snapshot
 
 
+@profile
 def render_snapshot(
     grid: RasterGrid,
     storm_mask: np.ndarray,
