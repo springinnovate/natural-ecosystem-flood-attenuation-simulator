@@ -39,6 +39,7 @@ class TimeStepConfig:
 class SnapshotConfig:
     directory: Path
     interval_minutes: float
+    max_depth_meters: float | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ def _snapshot_config(section: dict[str, Any]) -> SnapshotConfig:
     return SnapshotConfig(
         directory=Path(directory),
         interval_minutes=_float({"interval_minutes": interval_minutes}, "interval_minutes", positive=True),
+        max_depth_meters=_optional_float(snapshots, "max_depth_meters", positive=True),
     )
 
 

@@ -232,6 +232,55 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(state.hydraulic.depth[0, 1], 0.01)
         self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 0.01)
 
+    def test_render_snapshot_uses_configured_depth_scale(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 1), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        figure = MagicMock()
+        axis = MagicMock()
+        water_layer = MagicMock()
+        axis.imshow.side_effect = [MagicMock(), MagicMock(), water_layer]
+
+        with patch("nefas.engine.plt.subplots", return_value=(figure, axis)):
+            render_snapshot(
+                grid,
+                storm_mask=np.array([[True]]),
+                depth=np.array([[0.5]], dtype=np.float64),
+                path=Path("snapshot.png"),
+                elapsed_minutes=15,
+                max_depth_meters=2.0,
+            )
+
+        _, water_kwargs = axis.imshow.call_args_list[2]
+        self.assertEqual(water_kwargs["vmin"], 0)
+        self.assertEqual(water_kwargs["vmax"], 2.0)
+        figure.colorbar.assert_called_once_with(water_layer, ax=axis, fraction=0.046, pad=0.04)
+
+    def test_render_snapshot_autoscales_when_depth_scale_is_omitted(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 1), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        figure = MagicMock()
+        axis = MagicMock()
+        axis.imshow.side_effect = [MagicMock(), MagicMock(), MagicMock()]
+
+        with patch("nefas.engine.plt.subplots", return_value=(figure, axis)):
+            render_snapshot(
+                grid,
+                storm_mask=np.array([[True]]),
+                depth=np.array([[0.5]], dtype=np.float64),
+                path=Path("snapshot.png"),
+                elapsed_minutes=15,
+            )
+
+        _, water_kwargs = axis.imshow.call_args_list[2]
+        self.assertNotIn("vmin", water_kwargs)
+        self.assertNotIn("vmax", water_kwargs)
+
     def test_render_snapshot_uses_water_colormap(self) -> None:
         grid = RasterGrid(
             elevation=np.zeros((1, 1), dtype=np.float64),
