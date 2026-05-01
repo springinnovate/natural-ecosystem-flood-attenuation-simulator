@@ -29,6 +29,8 @@ from nefas.engine import (
     render_snapshot,
     simulation_duration_seconds,
     timestep_duration_seconds,
+    update_interior_x_fluxes_numba,
+    update_interior_y_fluxes_numba,
     water_timestep,
 )
 from nefas.simulation import RasterGrid, SimulationState
@@ -183,6 +185,144 @@ class EngineTests(unittest.TestCase):
         )
 
         np.testing.assert_allclose(actual, expected)
+
+    def test_fused_x_flux_kernel_matches_numpy_reference(self) -> None:
+        elevation = np.array(
+            [
+                [0.0, 0.1, 0.0],
+                [0.2, 0.0, 0.3],
+            ],
+            dtype=np.float64,
+        )
+        depth = np.array(
+            [
+                [0.3, 0.0, 0.5],
+                [0.0, 0.4, 0.2],
+            ],
+            dtype=np.float64,
+        )
+        eta = elevation + depth
+        manning_n = np.array(
+            [
+                [0.04, 0.08, 0.12],
+                [0.05, 0.07, 0.09],
+            ],
+            dtype=np.float64,
+        )
+        valid_cells = np.array(
+            [
+                [True, True, False],
+                [True, True, True],
+            ]
+        )
+        qx = np.array(
+            [
+                [0.0, 0.1, -0.2, 0.0],
+                [0.0, 0.3, -0.4, 0.0],
+            ],
+            dtype=np.float64,
+        )
+
+        h_face_x = np.maximum(
+            0,
+            np.maximum(eta[:, :-1], eta[:, 1:])
+            - np.maximum(elevation[:, :-1], elevation[:, 1:]),
+        )
+        slope_x = (eta[:, 1:] - eta[:, :-1]) / 30.0
+        n_face_x = 0.5 * (manning_n[:, :-1] + manning_n[:, 1:])
+        valid_x = valid_cells[:, :-1] & valid_cells[:, 1:]
+        expected = local_inertial_flux_update(
+            old_flux=qx[:, 1:-1],
+            face_depth=h_face_x,
+            slope=slope_x,
+            manning_n=n_face_x,
+            valid_faces=valid_x,
+            dt_seconds=5.0,
+        )
+
+        update_interior_x_fluxes_numba(
+            qx,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            5.0,
+        )
+
+        np.testing.assert_allclose(qx[:, 1:-1], expected)
+
+    def test_fused_y_flux_kernel_matches_numpy_reference(self) -> None:
+        elevation = np.array(
+            [
+                [0.0, 0.1],
+                [0.2, 0.0],
+                [0.1, 0.3],
+            ],
+            dtype=np.float64,
+        )
+        depth = np.array(
+            [
+                [0.3, 0.0],
+                [0.0, 0.4],
+                [0.2, 0.1],
+            ],
+            dtype=np.float64,
+        )
+        eta = elevation + depth
+        manning_n = np.array(
+            [
+                [0.04, 0.08],
+                [0.05, 0.07],
+                [0.06, 0.09],
+            ],
+            dtype=np.float64,
+        )
+        valid_cells = np.array(
+            [
+                [True, True],
+                [True, False],
+                [True, True],
+            ]
+        )
+        qy = np.array(
+            [
+                [0.0, 0.0],
+                [0.1, -0.2],
+                [0.3, -0.4],
+                [0.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+
+        h_face_y = np.maximum(
+            0,
+            np.maximum(eta[:-1, :], eta[1:, :])
+            - np.maximum(elevation[:-1, :], elevation[1:, :]),
+        )
+        slope_y = (eta[1:, :] - eta[:-1, :]) / 30.0
+        n_face_y = 0.5 * (manning_n[:-1, :] + manning_n[1:, :])
+        valid_y = valid_cells[:-1, :] & valid_cells[1:, :]
+        expected = local_inertial_flux_update(
+            old_flux=qy[1:-1, :],
+            face_depth=h_face_y,
+            slope=slope_y,
+            manning_n=n_face_y,
+            valid_faces=valid_y,
+            dt_seconds=5.0,
+        )
+
+        update_interior_y_fluxes_numba(
+            qy,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            5.0,
+        )
+
+        np.testing.assert_allclose(qy[1:-1, :], expected)
 
     def test_apply_rainfall_forcing_adds_depth_only_to_valid_storm_cells(self) -> None:
         grid = RasterGrid(

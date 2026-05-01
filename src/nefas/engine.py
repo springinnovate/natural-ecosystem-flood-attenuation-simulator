@@ -12,7 +12,7 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize
 from line_profiler import profile
-from numba import boolean, float64, vectorize
+from numba import boolean, float64, njit, prange, vectorize
 
 from .config import RainfallConfig, SimulationConfig
 from .preprocessing import IntermediateOutputs
@@ -304,83 +304,218 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     surface = state.surface
     eta = hydraulic.water_surface(grid)
 
-    qx_old = hydraulic.qx[:, 1:-1]
-    # Face depth uses the higher adjacent terrain cell as the sill elevation.
-    h_face_x = np.maximum(
-        0,
-        np.maximum(eta[:, :-1], eta[:, 1:])
-        - np.maximum(grid.elevation[:, :-1], grid.elevation[:, 1:]),
+    update_interior_x_fluxes_numba(
+        hydraulic.qx,
+        eta,
+        grid.elevation,
+        surface.manning_n,
+        grid.valid_cells,
+        grid.dx,
+        dt_seconds,
     )
-    valid_x = grid.valid_cells[:, :-1] & grid.valid_cells[:, 1:]
-    slope_x = (eta[:, 1:] - eta[:, :-1]) / grid.dx
-    n_face_x = 0.5 * (surface.manning_n[:, :-1] + surface.manning_n[:, 1:])
-    hydraulic.qx[:, 1:-1] = local_inertial_flux_update_numba(
-        qx_old,
-        h_face_x,
-        slope_x,
-        n_face_x,
-        valid_x,
+    update_x_boundary_fluxes_numba(
+        hydraulic.qx,
+        hydraulic.depth,
+        eta,
+        grid.elevation,
+        surface.manning_n,
+        grid.valid_cells,
+        grid.dx,
         dt_seconds,
     )
 
-    # Open boundaries are dry outside cells; outward flux leaves the domain.
-    left_boundary_flux = local_inertial_flux_update_numba(
-        hydraulic.qx[:, 0],
-        hydraulic.depth[:, 0],
-        (eta[:, 0] - grid.elevation[:, 0]) / grid.dx,
-        surface.manning_n[:, 0],
-        grid.valid_cells[:, 0],
+    update_interior_y_fluxes_numba(
+        hydraulic.qy,
+        eta,
+        grid.elevation,
+        surface.manning_n,
+        grid.valid_cells,
+        grid.dy,
         dt_seconds,
     )
-    hydraulic.qx[:, 0] = np.minimum(left_boundary_flux, 0)
-    right_boundary_flux = local_inertial_flux_update_numba(
-        hydraulic.qx[:, -1],
-        hydraulic.depth[:, -1],
-        (grid.elevation[:, -1] - eta[:, -1]) / grid.dx,
-        surface.manning_n[:, -1],
-        grid.valid_cells[:, -1],
-        dt_seconds,
-    )
-    hydraulic.qx[:, -1] = np.maximum(right_boundary_flux, 0)
-
-    qy_old = hydraulic.qy[1:-1, :]
-    # Face depth uses the higher adjacent terrain cell as the sill elevation.
-    h_face_y = np.maximum(
-        0,
-        np.maximum(eta[:-1, :], eta[1:, :])
-        - np.maximum(grid.elevation[:-1, :], grid.elevation[1:, :]),
-    )
-    valid_y = grid.valid_cells[:-1, :] & grid.valid_cells[1:, :]
-    slope_y = (eta[1:, :] - eta[:-1, :]) / grid.dy
-    n_face_y = 0.5 * (surface.manning_n[:-1, :] + surface.manning_n[1:, :])
-    hydraulic.qy[1:-1, :] = local_inertial_flux_update_numba(
-        qy_old,
-        h_face_y,
-        slope_y,
-        n_face_y,
-        valid_y,
+    update_y_boundary_fluxes_numba(
+        hydraulic.qy,
+        hydraulic.depth,
+        eta,
+        grid.elevation,
+        surface.manning_n,
+        grid.valid_cells,
+        grid.dy,
         dt_seconds,
     )
 
-    # Open boundaries are dry outside cells; outward flux leaves the domain.
-    top_boundary_flux = local_inertial_flux_update_numba(
-        hydraulic.qy[0, :],
-        hydraulic.depth[0, :],
-        (eta[0, :] - grid.elevation[0, :]) / grid.dy,
-        surface.manning_n[0, :],
-        grid.valid_cells[0, :],
-        dt_seconds,
+
+@njit(
+    float64(float64, float64, float64, float64, boolean, float64),
+    cache=True,
+    inline="always",
+)
+def local_inertial_flux_update_value(
+    old_flux: float,
+    face_depth: float,
+    slope: float,
+    manning_n: float,
+    valid_face: bool,
+    dt_seconds: float,
+) -> float:
+    """Return one local-inertial flux update value."""
+    if not valid_face or face_depth < DRY_DEPTH_METERS:
+        return 0.0
+
+    depth_safe = max(face_depth, DRY_DEPTH_METERS)
+    denominator = (
+        1.0
+        + GRAVITY_METERS_PER_SECOND_SQUARED
+        * dt_seconds
+        * manning_n**2
+        * abs(old_flux)
+        / depth_safe ** (7.0 / 3.0)
     )
-    hydraulic.qy[0, :] = np.minimum(top_boundary_flux, 0)
-    bottom_boundary_flux = local_inertial_flux_update_numba(
-        hydraulic.qy[-1, :],
-        hydraulic.depth[-1, :],
-        (grid.elevation[-1, :] - eta[-1, :]) / grid.dy,
-        surface.manning_n[-1, :],
-        grid.valid_cells[-1, :],
-        dt_seconds,
-    )
-    hydraulic.qy[-1, :] = np.maximum(bottom_boundary_flux, 0)
+    return (
+        old_flux - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
+    ) / denominator
+
+
+@njit(cache=True, parallel=True)
+def update_interior_x_fluxes_numba(
+    qx: np.ndarray,
+    eta: np.ndarray,
+    elevation: np.ndarray,
+    manning_n: np.ndarray,
+    valid_cells: np.ndarray,
+    dx: float,
+    dt_seconds: float,
+) -> None:
+    """Update east-west interior face fluxes in one compiled pass."""
+    rows, cols = eta.shape
+    for row in prange(rows):
+        for col in range(cols - 1):
+            face_depth = max(
+                0.0,
+                max(eta[row, col], eta[row, col + 1])
+                - max(elevation[row, col], elevation[row, col + 1]),
+            )
+            slope = (eta[row, col + 1] - eta[row, col]) / dx
+            face_manning_n = 0.5 * (
+                manning_n[row, col] + manning_n[row, col + 1]
+            )
+            valid_face = valid_cells[row, col] and valid_cells[row, col + 1]
+            qx[row, col + 1] = local_inertial_flux_update_value(
+                qx[row, col + 1],
+                face_depth,
+                slope,
+                face_manning_n,
+                valid_face,
+                dt_seconds,
+            )
+
+
+@njit(cache=True, parallel=True)
+def update_interior_y_fluxes_numba(
+    qy: np.ndarray,
+    eta: np.ndarray,
+    elevation: np.ndarray,
+    manning_n: np.ndarray,
+    valid_cells: np.ndarray,
+    dy: float,
+    dt_seconds: float,
+) -> None:
+    """Update north-south interior face fluxes in one compiled pass."""
+    rows, cols = eta.shape
+    for row in prange(rows - 1):
+        for col in range(cols):
+            face_depth = max(
+                0.0,
+                max(eta[row, col], eta[row + 1, col])
+                - max(elevation[row, col], elevation[row + 1, col]),
+            )
+            slope = (eta[row + 1, col] - eta[row, col]) / dy
+            face_manning_n = 0.5 * (
+                manning_n[row, col] + manning_n[row + 1, col]
+            )
+            valid_face = valid_cells[row, col] and valid_cells[row + 1, col]
+            qy[row + 1, col] = local_inertial_flux_update_value(
+                qy[row + 1, col],
+                face_depth,
+                slope,
+                face_manning_n,
+                valid_face,
+                dt_seconds,
+            )
+
+
+@njit(cache=True, parallel=True)
+def update_x_boundary_fluxes_numba(
+    qx: np.ndarray,
+    depth: np.ndarray,
+    eta: np.ndarray,
+    elevation: np.ndarray,
+    manning_n: np.ndarray,
+    valid_cells: np.ndarray,
+    dx: float,
+    dt_seconds: float,
+) -> None:
+    """Update open east-west boundary fluxes in one compiled pass."""
+    rows = eta.shape[0]
+    right_col = eta.shape[1] - 1
+    right_face = qx.shape[1] - 1
+    for row in prange(rows):
+        left_flux = local_inertial_flux_update_value(
+            qx[row, 0],
+            depth[row, 0],
+            (eta[row, 0] - elevation[row, 0]) / dx,
+            manning_n[row, 0],
+            valid_cells[row, 0],
+            dt_seconds,
+        )
+        qx[row, 0] = min(left_flux, 0.0)
+
+        right_flux = local_inertial_flux_update_value(
+            qx[row, right_face],
+            depth[row, right_col],
+            (elevation[row, right_col] - eta[row, right_col]) / dx,
+            manning_n[row, right_col],
+            valid_cells[row, right_col],
+            dt_seconds,
+        )
+        qx[row, right_face] = max(right_flux, 0.0)
+
+
+@njit(cache=True, parallel=True)
+def update_y_boundary_fluxes_numba(
+    qy: np.ndarray,
+    depth: np.ndarray,
+    eta: np.ndarray,
+    elevation: np.ndarray,
+    manning_n: np.ndarray,
+    valid_cells: np.ndarray,
+    dy: float,
+    dt_seconds: float,
+) -> None:
+    """Update open north-south boundary fluxes in one compiled pass."""
+    cols = eta.shape[1]
+    bottom_row = eta.shape[0] - 1
+    bottom_face = qy.shape[0] - 1
+    for col in prange(cols):
+        top_flux = local_inertial_flux_update_value(
+            qy[0, col],
+            depth[0, col],
+            (eta[0, col] - elevation[0, col]) / dy,
+            manning_n[0, col],
+            valid_cells[0, col],
+            dt_seconds,
+        )
+        qy[0, col] = min(top_flux, 0.0)
+
+        bottom_flux = local_inertial_flux_update_value(
+            qy[bottom_face, col],
+            depth[bottom_row, col],
+            (elevation[bottom_row, col] - eta[bottom_row, col]) / dy,
+            manning_n[bottom_row, col],
+            valid_cells[bottom_row, col],
+            dt_seconds,
+        )
+        qy[bottom_face, col] = max(bottom_flux, 0.0)
 
 
 @vectorize(
