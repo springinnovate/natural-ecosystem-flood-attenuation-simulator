@@ -5,21 +5,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from tqdm import tqdm
 import geopandas as gpd
 import matplotlib
 import numpy as np
 import rasterio
 from rasterio.features import rasterize
+from line_profiler import profile
 
 from .config import RainfallConfig, SimulationConfig
 from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
-
-try:
-    from line_profiler import profile
-except ImportError:
-    def profile(function):
-        return function
 
 
 matplotlib.use("Agg")
@@ -132,13 +128,6 @@ def resolve_snapshot_directory(snapshot_directory: Path, workspace: Path) -> Pat
 @contextmanager
 def simulation_progress(duration_seconds: float) -> Iterator[object]:
     """Yield a model-time progress bar for long-running simulation loops."""
-    try:
-        from tqdm import tqdm
-    except ImportError as exc:
-        raise RuntimeError(
-            "tqdm is required for simulation progress reporting."
-        ) from exc
-
     with tqdm(
         total=duration_seconds,
         desc="Simulating",
