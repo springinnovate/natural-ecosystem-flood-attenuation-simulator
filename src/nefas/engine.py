@@ -12,6 +12,7 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize
 from line_profiler import profile
+from numba import boolean, float64, vectorize
 
 from .config import RainfallConfig, SimulationConfig
 from .preprocessing import IntermediateOutputs
@@ -313,32 +314,32 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     valid_x = grid.valid_cells[:, :-1] & grid.valid_cells[:, 1:]
     slope_x = (eta[:, 1:] - eta[:, :-1]) / grid.dx
     n_face_x = 0.5 * (surface.manning_n[:, :-1] + surface.manning_n[:, 1:])
-    hydraulic.qx[:, 1:-1] = local_inertial_flux_update(
-        old_flux=qx_old,
-        face_depth=h_face_x,
-        slope=slope_x,
-        manning_n=n_face_x,
-        valid_faces=valid_x,
-        dt_seconds=dt_seconds,
+    hydraulic.qx[:, 1:-1] = local_inertial_flux_update_numba(
+        qx_old,
+        h_face_x,
+        slope_x,
+        n_face_x,
+        valid_x,
+        dt_seconds,
     )
 
     # Open boundaries are dry outside cells; outward flux leaves the domain.
-    left_boundary_flux = local_inertial_flux_update(
-        old_flux=hydraulic.qx[:, 0],
-        face_depth=hydraulic.depth[:, 0],
-        slope=(eta[:, 0] - grid.elevation[:, 0]) / grid.dx,
-        manning_n=surface.manning_n[:, 0],
-        valid_faces=grid.valid_cells[:, 0],
-        dt_seconds=dt_seconds,
+    left_boundary_flux = local_inertial_flux_update_numba(
+        hydraulic.qx[:, 0],
+        hydraulic.depth[:, 0],
+        (eta[:, 0] - grid.elevation[:, 0]) / grid.dx,
+        surface.manning_n[:, 0],
+        grid.valid_cells[:, 0],
+        dt_seconds,
     )
     hydraulic.qx[:, 0] = np.minimum(left_boundary_flux, 0)
-    right_boundary_flux = local_inertial_flux_update(
-        old_flux=hydraulic.qx[:, -1],
-        face_depth=hydraulic.depth[:, -1],
-        slope=(grid.elevation[:, -1] - eta[:, -1]) / grid.dx,
-        manning_n=surface.manning_n[:, -1],
-        valid_faces=grid.valid_cells[:, -1],
-        dt_seconds=dt_seconds,
+    right_boundary_flux = local_inertial_flux_update_numba(
+        hydraulic.qx[:, -1],
+        hydraulic.depth[:, -1],
+        (grid.elevation[:, -1] - eta[:, -1]) / grid.dx,
+        surface.manning_n[:, -1],
+        grid.valid_cells[:, -1],
+        dt_seconds,
     )
     hydraulic.qx[:, -1] = np.maximum(right_boundary_flux, 0)
 
@@ -352,36 +353,69 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     valid_y = grid.valid_cells[:-1, :] & grid.valid_cells[1:, :]
     slope_y = (eta[1:, :] - eta[:-1, :]) / grid.dy
     n_face_y = 0.5 * (surface.manning_n[:-1, :] + surface.manning_n[1:, :])
-    hydraulic.qy[1:-1, :] = local_inertial_flux_update(
-        old_flux=qy_old,
-        face_depth=h_face_y,
-        slope=slope_y,
-        manning_n=n_face_y,
-        valid_faces=valid_y,
-        dt_seconds=dt_seconds,
+    hydraulic.qy[1:-1, :] = local_inertial_flux_update_numba(
+        qy_old,
+        h_face_y,
+        slope_y,
+        n_face_y,
+        valid_y,
+        dt_seconds,
     )
 
     # Open boundaries are dry outside cells; outward flux leaves the domain.
-    top_boundary_flux = local_inertial_flux_update(
-        old_flux=hydraulic.qy[0, :],
-        face_depth=hydraulic.depth[0, :],
-        slope=(eta[0, :] - grid.elevation[0, :]) / grid.dy,
-        manning_n=surface.manning_n[0, :],
-        valid_faces=grid.valid_cells[0, :],
-        dt_seconds=dt_seconds,
+    top_boundary_flux = local_inertial_flux_update_numba(
+        hydraulic.qy[0, :],
+        hydraulic.depth[0, :],
+        (eta[0, :] - grid.elevation[0, :]) / grid.dy,
+        surface.manning_n[0, :],
+        grid.valid_cells[0, :],
+        dt_seconds,
     )
     hydraulic.qy[0, :] = np.minimum(top_boundary_flux, 0)
-    bottom_boundary_flux = local_inertial_flux_update(
-        old_flux=hydraulic.qy[-1, :],
-        face_depth=hydraulic.depth[-1, :],
-        slope=(grid.elevation[-1, :] - eta[-1, :]) / grid.dy,
-        manning_n=surface.manning_n[-1, :],
-        valid_faces=grid.valid_cells[-1, :],
-        dt_seconds=dt_seconds,
+    bottom_boundary_flux = local_inertial_flux_update_numba(
+        hydraulic.qy[-1, :],
+        hydraulic.depth[-1, :],
+        (grid.elevation[-1, :] - eta[-1, :]) / grid.dy,
+        surface.manning_n[-1, :],
+        grid.valid_cells[-1, :],
+        dt_seconds,
     )
     hydraulic.qy[-1, :] = np.maximum(bottom_boundary_flux, 0)
 
 
+@vectorize(
+    [float64(float64, float64, float64, float64, boolean, float64)],
+    nopython=True,
+    target="parallel",
+    cache=True,
+)
+def local_inertial_flux_update_numba(
+    old_flux: float,
+    face_depth: float,
+    slope: float,
+    manning_n: float,
+    valid_face: bool,
+    dt_seconds: float,
+) -> float:
+    """Return the compiled scalar local-inertial flux update for face arrays."""
+    if not valid_face or face_depth < DRY_DEPTH_METERS:
+        return 0.0
+
+    depth_safe = max(face_depth, DRY_DEPTH_METERS)
+    denominator = (
+        1.0
+        + GRAVITY_METERS_PER_SECOND_SQUARED
+        * dt_seconds
+        * manning_n**2
+        * abs(old_flux)
+        / depth_safe ** (7.0 / 3.0)
+    )
+    return (
+        old_flux - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
+    ) / denominator
+
+
+@profile
 def local_inertial_flux_update(
     *,
     old_flux: np.ndarray,
