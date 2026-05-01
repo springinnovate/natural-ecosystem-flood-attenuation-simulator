@@ -32,8 +32,11 @@ from nefas.engine import (
     render_snapshot,
     simulation_duration_seconds,
     timestep_duration_seconds,
+    update_face_fluxes_numba,
     update_interior_x_fluxes_numba,
     update_interior_y_fluxes_numba,
+    update_x_boundary_fluxes_numba,
+    update_y_boundary_fluxes_numba,
     water_timestep,
 )
 from nefas.simulation import RasterGrid, SimulationState
@@ -369,6 +372,108 @@ class EngineTests(unittest.TestCase):
         )
 
         np.testing.assert_allclose(qy[1:-1, :], expected)
+
+    def test_parallel_face_flux_kernel_matches_orientation_kernels(self) -> None:
+        elevation = np.array(
+            [
+                [0.0, 0.1, 0.0],
+                [0.2, 0.0, 0.3],
+            ],
+            dtype=np.float64,
+        )
+        depth = np.array(
+            [
+                [0.3, 0.0, 0.5],
+                [0.0, 0.4, 0.2],
+            ],
+            dtype=np.float64,
+        )
+        eta = elevation + depth
+        manning_n = np.array(
+            [
+                [0.04, 0.08, 0.12],
+                [0.05, 0.07, 0.09],
+            ],
+            dtype=np.float64,
+        )
+        valid_cells = np.array(
+            [
+                [True, True, False],
+                [True, True, True],
+            ]
+        )
+        expected_qx = np.array(
+            [
+                [-0.3, 0.1, -0.2, 0.4],
+                [-0.1, 0.3, -0.4, 0.2],
+            ],
+            dtype=np.float64,
+        )
+        actual_qx = expected_qx.copy()
+        expected_qy = np.array(
+            [
+                [-0.2, -0.1, -0.3],
+                [0.5, -0.4, 0.1],
+                [0.3, 0.2, 0.4],
+            ],
+            dtype=np.float64,
+        )
+        actual_qy = expected_qy.copy()
+
+        update_interior_x_fluxes_numba(
+            expected_qx,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            5.0,
+        )
+        update_x_boundary_fluxes_numba(
+            expected_qx,
+            depth,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            5.0,
+        )
+        update_interior_y_fluxes_numba(
+            expected_qy,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            5.0,
+        )
+        update_y_boundary_fluxes_numba(
+            expected_qy,
+            depth,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            5.0,
+        )
+
+        update_face_fluxes_numba(
+            actual_qx,
+            actual_qy,
+            depth,
+            eta,
+            elevation,
+            manning_n,
+            valid_cells,
+            30.0,
+            30.0,
+            5.0,
+        )
+
+        np.testing.assert_allclose(actual_qx, expected_qx)
+        np.testing.assert_allclose(actual_qy, expected_qy)
 
     def test_outgoing_flux_limiter_scales_boundary_and_interior_outflows(self) -> None:
         depth = np.array([[0.10, 0.20]], dtype=np.float64)
