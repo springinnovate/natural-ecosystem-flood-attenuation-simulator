@@ -292,7 +292,15 @@ def add_rainfall_depth(
 def water_timestep(state: SimulationState, dt_seconds: float) -> None:
     """Advance water depth with vectorized local-inertial face fluxes."""
     update_face_fluxes(state, dt_seconds)
-    limit_outgoing_fluxes(state, dt_seconds)
+    limit_outgoing_fluxes(
+        state.hydraulic.depth,
+        state.hydraulic.qx,
+        state.hydraulic.qy,
+        state.grid.valid_cells,
+        state.grid.dx,
+        state.grid.dy,
+        dt_seconds,
+    )
     update_depth_from_fluxes(state, dt_seconds)
 
 
@@ -576,31 +584,57 @@ def local_inertial_flux_update(
     return np.where(valid_faces & (face_depth >= DRY_DEPTH_METERS), flux, 0)
 
 
-@profile
-def limit_outgoing_fluxes(state: SimulationState, dt_seconds: float) -> None:
-    """Scale outgoing face fluxes so no cell can lose more water than it stores."""
-    depth = state.hydraulic.depth
-    qx = state.hydraulic.qx
-    qy = state.hydraulic.qy
-    valid_cells = state.grid.valid_cells
+@njit(cache=True, parallel=True)
+def limit_outgoing_fluxes(
+    depth: np.ndarray,
+    qx: np.ndarray,
+    qy: np.ndarray,
+    valid_cells: np.ndarray,
+    dx: float,
+    dy: float,
+    dt_seconds: float,
+) -> None:
+    """Scale outgoing face fluxes in compiled loops."""
+    rows, cols = depth.shape
+    scale = np.ones(depth.shape, dtype=np.float64)
 
-    outgoing_depth = dt_seconds * (
-        np.maximum(qx[:, 1:], 0) / state.grid.dx
-        + np.maximum(-qx[:, :-1], 0) / state.grid.dx
-        + np.maximum(qy[1:, :], 0) / state.grid.dy
-        + np.maximum(-qy[:-1, :], 0) / state.grid.dy
-    )
-    scale = np.ones_like(depth)
-    needs_limit = valid_cells & (outgoing_depth > depth) & (outgoing_depth > 0)
-    scale[needs_limit] = depth[needs_limit] / outgoing_depth[needs_limit]
+    for row in prange(rows):
+        for col in range(cols):
+            outgoing_depth = dt_seconds * (
+                max(qx[row, col + 1], 0.0) / dx
+                + max(-qx[row, col], 0.0) / dx
+                + max(qy[row + 1, col], 0.0) / dy
+                + max(-qy[row, col], 0.0) / dy
+            )
+            if valid_cells[row, col] and outgoing_depth > depth[row, col]:
+                if outgoing_depth > 0.0:
+                    scale[row, col] = depth[row, col] / outgoing_depth
 
-    qx[:, 1:-1] *= np.where(qx[:, 1:-1] >= 0, scale[:, :-1], scale[:, 1:])
-    qx[:, 0] *= np.where(qx[:, 0] >= 0, 1, scale[:, 0])
-    qx[:, -1] *= np.where(qx[:, -1] >= 0, scale[:, -1], 1)
+    for row in prange(rows):
+        for col in range(1, cols):
+            if qx[row, col] >= 0.0:
+                qx[row, col] *= scale[row, col - 1]
+            else:
+                qx[row, col] *= scale[row, col]
 
-    qy[1:-1, :] *= np.where(qy[1:-1, :] >= 0, scale[:-1, :], scale[1:, :])
-    qy[0, :] *= np.where(qy[0, :] >= 0, 1, scale[0, :])
-    qy[-1, :] *= np.where(qy[-1, :] >= 0, scale[-1, :], 1)
+    for row in prange(rows):
+        if qx[row, 0] < 0.0:
+            qx[row, 0] *= scale[row, 0]
+        if qx[row, cols] >= 0.0:
+            qx[row, cols] *= scale[row, cols - 1]
+
+    for row in prange(1, rows):
+        for col in range(cols):
+            if qy[row, col] >= 0.0:
+                qy[row, col] *= scale[row - 1, col]
+            else:
+                qy[row, col] *= scale[row, col]
+
+    for col in prange(cols):
+        if qy[0, col] < 0.0:
+            qy[0, col] *= scale[0, col]
+        if qy[rows, col] >= 0.0:
+            qy[rows, col] *= scale[rows - 1, col]
 
 
 @profile

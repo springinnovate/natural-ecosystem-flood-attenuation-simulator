@@ -23,6 +23,7 @@ from nefas.engine import (
     add_rainfall_depth,
     apply_rainfall_forcing,
     effective_time_step_seconds,
+    limit_outgoing_fluxes,
     local_inertial_flux_update,
     local_inertial_flux_update_numba,
     rainfall_rate_m_per_second,
@@ -323,6 +324,36 @@ class EngineTests(unittest.TestCase):
         )
 
         np.testing.assert_allclose(qy[1:-1, :], expected)
+
+    def test_outgoing_flux_limiter_scales_boundary_and_interior_outflows(self) -> None:
+        depth = np.array([[0.10, 0.20]], dtype=np.float64)
+        qx = np.array([[-0.5, 0.4, 0.6]], dtype=np.float64)
+        qy = np.array(
+            [
+                [-0.2, -0.1],
+                [0.3, 0.2],
+            ],
+            dtype=np.float64,
+        )
+
+        limit_outgoing_fluxes(
+            depth,
+            qx,
+            qy,
+            np.array([[True, True]]),
+            10.0,
+            20.0,
+            5.0,
+        )
+
+        np.testing.assert_allclose(
+            qx,
+            np.array([[-0.08695652, 0.06956522, 0.32]]),
+        )
+        np.testing.assert_allclose(
+            qy,
+            np.array([[-0.03478261, -0.05333333], [0.05217391, 0.10666667]]),
+        )
 
     def test_apply_rainfall_forcing_adds_depth_only_to_valid_storm_cells(self) -> None:
         grid = RasterGrid(
