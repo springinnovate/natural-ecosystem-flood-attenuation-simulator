@@ -404,42 +404,15 @@ def update_face_fluxes(state: SimulationState, dt_seconds: float) -> None:
     surface = state.surface
     eta = hydraulic.water_surface(grid)
 
-    update_interior_x_fluxes_numba(
+    update_face_fluxes_numba(
         hydraulic.qx,
-        eta,
-        grid.elevation,
-        surface.manning_n,
-        grid.valid_cells,
-        grid.dx,
-        dt_seconds,
-    )
-    update_x_boundary_fluxes_numba(
-        hydraulic.qx,
-        hydraulic.depth,
-        eta,
-        grid.elevation,
-        surface.manning_n,
-        grid.valid_cells,
-        grid.dx,
-        dt_seconds,
-    )
-
-    update_interior_y_fluxes_numba(
-        hydraulic.qy,
-        eta,
-        grid.elevation,
-        surface.manning_n,
-        grid.valid_cells,
-        grid.dy,
-        dt_seconds,
-    )
-    update_y_boundary_fluxes_numba(
         hydraulic.qy,
         hydraulic.depth,
         eta,
         grid.elevation,
         surface.manning_n,
         grid.valid_cells,
+        grid.dx,
         grid.dy,
         dt_seconds,
     )
@@ -474,6 +447,124 @@ def local_inertial_flux_update_value(
     return (
         old_flux - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
     ) / denominator
+
+
+@njit(cache=True, parallel=True)
+def update_face_fluxes_numba(
+    qx: np.ndarray,
+    qy: np.ndarray,
+    depth: np.ndarray,
+    eta: np.ndarray,
+    elevation: np.ndarray,
+    manning_n: np.ndarray,
+    valid_cells: np.ndarray,
+    dx: float,
+    dy: float,
+    dt_seconds: float,
+) -> None:
+    """Update all face fluxes in one compiled parallel pass."""
+    rows, cols = eta.shape
+    x_faces = rows * (cols + 1)
+    y_faces = (rows + 1) * cols
+
+    for face_index in prange(x_faces + y_faces):
+        if face_index < x_faces:
+            row = face_index // (cols + 1)
+            face_col = face_index - row * (cols + 1)
+
+            if face_col == 0:
+                flux = local_inertial_flux_update_value(
+                    qx[row, 0],
+                    depth[row, 0],
+                    (eta[row, 0] - elevation[row, 0]) / dx,
+                    manning_n[row, 0],
+                    valid_cells[row, 0],
+                    dt_seconds,
+                )
+                qx[row, 0] = min(flux, 0.0)
+            elif face_col == cols:
+                cell_col = cols - 1
+                flux = local_inertial_flux_update_value(
+                    qx[row, face_col],
+                    depth[row, cell_col],
+                    (elevation[row, cell_col] - eta[row, cell_col]) / dx,
+                    manning_n[row, cell_col],
+                    valid_cells[row, cell_col],
+                    dt_seconds,
+                )
+                qx[row, face_col] = max(flux, 0.0)
+            else:
+                left_col = face_col - 1
+                right_col = face_col
+                face_depth = max(
+                    0.0,
+                    max(eta[row, left_col], eta[row, right_col])
+                    - max(elevation[row, left_col], elevation[row, right_col]),
+                )
+                slope = (eta[row, right_col] - eta[row, left_col]) / dx
+                face_manning_n = 0.5 * (
+                    manning_n[row, left_col] + manning_n[row, right_col]
+                )
+                valid_face = (
+                    valid_cells[row, left_col] and valid_cells[row, right_col]
+                )
+                qx[row, face_col] = local_inertial_flux_update_value(
+                    qx[row, face_col],
+                    face_depth,
+                    slope,
+                    face_manning_n,
+                    valid_face,
+                    dt_seconds,
+                )
+        else:
+            y_face_index = face_index - x_faces
+            face_row = y_face_index // cols
+            col = y_face_index - face_row * cols
+
+            if face_row == 0:
+                flux = local_inertial_flux_update_value(
+                    qy[0, col],
+                    depth[0, col],
+                    (eta[0, col] - elevation[0, col]) / dy,
+                    manning_n[0, col],
+                    valid_cells[0, col],
+                    dt_seconds,
+                )
+                qy[0, col] = min(flux, 0.0)
+            elif face_row == rows:
+                cell_row = rows - 1
+                flux = local_inertial_flux_update_value(
+                    qy[face_row, col],
+                    depth[cell_row, col],
+                    (elevation[cell_row, col] - eta[cell_row, col]) / dy,
+                    manning_n[cell_row, col],
+                    valid_cells[cell_row, col],
+                    dt_seconds,
+                )
+                qy[face_row, col] = max(flux, 0.0)
+            else:
+                top_row = face_row - 1
+                bottom_row = face_row
+                face_depth = max(
+                    0.0,
+                    max(eta[top_row, col], eta[bottom_row, col])
+                    - max(elevation[top_row, col], elevation[bottom_row, col]),
+                )
+                slope = (eta[bottom_row, col] - eta[top_row, col]) / dy
+                face_manning_n = 0.5 * (
+                    manning_n[top_row, col] + manning_n[bottom_row, col]
+                )
+                valid_face = (
+                    valid_cells[top_row, col] and valid_cells[bottom_row, col]
+                )
+                qy[face_row, col] = local_inertial_flux_update_value(
+                    qy[face_row, col],
+                    face_depth,
+                    slope,
+                    face_manning_n,
+                    valid_face,
+                    dt_seconds,
+                )
 
 
 @njit(cache=True, parallel=True)
