@@ -23,8 +23,7 @@ from nefas.engine import (
     add_rainfall_depth,
     apply_rainfall_forcing,
     effective_time_step_seconds,
-    limit_outgoing_fluxes_numba,
-    limit_outgoing_fluxes_numpy,
+    limit_outgoing_fluxes,
     local_inertial_flux_update,
     local_inertial_flux_update_numba,
     rainfall_rate_m_per_second,
@@ -326,69 +325,34 @@ class EngineTests(unittest.TestCase):
 
         np.testing.assert_allclose(qy[1:-1, :], expected)
 
-    def test_numba_outgoing_flux_limiter_matches_numpy_reference(self) -> None:
-        grid = RasterGrid(
-            elevation=np.zeros((2, 2), dtype=np.float64),
-            dx=10,
-            dy=20,
-        )
-        depth = np.array(
-            [
-                [0.10, 0.20],
-                [0.15, 0.05],
-            ],
-            dtype=np.float64,
-        )
-        qx = np.array(
-            [
-                [-0.5, 0.4, 0.6],
-                [-0.1, -0.3, 0.2],
-            ],
-            dtype=np.float64,
-        )
+    def test_outgoing_flux_limiter_scales_boundary_and_interior_outflows(self) -> None:
+        depth = np.array([[0.10, 0.20]], dtype=np.float64)
+        qx = np.array([[-0.5, 0.4, 0.6]], dtype=np.float64)
         qy = np.array(
             [
                 [-0.2, -0.1],
-                [0.5, -0.4],
                 [0.3, 0.2],
             ],
             dtype=np.float64,
         )
-        expected_state = SimulationState.dry(
-            grid,
-            manning_n=0.08,
-            runoff_coefficient=1.0,
-        )
-        actual_state = SimulationState.dry(
-            grid,
-            manning_n=0.08,
-            runoff_coefficient=1.0,
-        )
-        expected_state.hydraulic.depth[:, :] = depth
-        expected_state.hydraulic.qx[:, :] = qx
-        expected_state.hydraulic.qy[:, :] = qy
-        actual_state.hydraulic.depth[:, :] = depth
-        actual_state.hydraulic.qx[:, :] = qx
-        actual_state.hydraulic.qy[:, :] = qy
 
-        limit_outgoing_fluxes_numpy(expected_state, dt_seconds=5.0)
-        limit_outgoing_fluxes_numba(
-            actual_state.hydraulic.depth,
-            actual_state.hydraulic.qx,
-            actual_state.hydraulic.qy,
-            actual_state.grid.valid_cells,
-            actual_state.grid.dx,
-            actual_state.grid.dy,
+        limit_outgoing_fluxes(
+            depth,
+            qx,
+            qy,
+            np.array([[True, True]]),
+            10.0,
+            20.0,
             5.0,
         )
 
         np.testing.assert_allclose(
-            actual_state.hydraulic.qx,
-            expected_state.hydraulic.qx,
+            qx,
+            np.array([[-0.08695652, 0.06956522, 0.32]]),
         )
         np.testing.assert_allclose(
-            actual_state.hydraulic.qy,
-            expected_state.hydraulic.qy,
+            qy,
+            np.array([[-0.03478261, -0.05333333], [0.05217391, 0.10666667]]),
         )
 
     def test_apply_rainfall_forcing_adds_depth_only_to_valid_storm_cells(self) -> None:
