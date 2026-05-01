@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 import sys
 from collections.abc import Iterator
@@ -18,11 +16,18 @@ from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
 matplotlib.use("Agg")
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib import pyplot as plt
 
 LOGGER = logging.getLogger(__name__)
 GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
 DRY_DEPTH_METERS = 0.001
+WATER_DEPTH_ALPHA = 0.82
+WATER_DEPTH_COLORMAP = LinearSegmentedColormap.from_list(
+    "nefas_water_depth",
+    ("#d8fbff", "#86d4ff", "#1f8be3", "#08306b"),
+)
+WATER_DEPTH_COLORMAP.set_bad((0, 0, 0, 0))
 
 
 @dataclass(frozen=True)
@@ -41,7 +46,9 @@ def run_simulation(
     """Run the simulation loop and write PNG snapshots."""
     grid = RasterGrid.from_dem(intermediates.clipped_dem)
     state = SimulationState.dry(grid, manning_n=0.08, runoff_coefficient=1.0)
-    storm_mask = storm_footprint_mask(config.inputs.storm_footprint, intermediates.clipped_dem)
+    storm_mask = storm_footprint_mask(
+        config.inputs.storm_footprint, intermediates.clipped_dem
+    )
     duration_seconds = rainfall_duration_seconds(config.rainfall)
     snapshot_interval_seconds = config.output.snapshots.interval_minutes * 60
 
@@ -96,7 +103,11 @@ def run_simulation(
                     duration_seconds,
                 )
 
-    LOGGER.info("Wrote %s simulation snapshots to %s", len(snapshots), snapshot_directory)
+    LOGGER.info(
+        "Wrote %s simulation snapshots to %s",
+        len(snapshots),
+        snapshot_directory,
+    )
     return SimulationRunResult(
         snapshot_directory=snapshot_directory,
         snapshots=tuple(snapshots),
@@ -117,7 +128,9 @@ def simulation_progress(duration_seconds: float) -> Iterator[object]:
     try:
         from tqdm import tqdm
     except ImportError as exc:
-        raise RuntimeError("tqdm is required for simulation progress reporting.") from exc
+        raise RuntimeError(
+            "tqdm is required for simulation progress reporting."
+        ) from exc
 
     with tqdm(
         total=duration_seconds,
@@ -155,7 +168,11 @@ def storm_footprint_mask(storm_footprint: Path, template_raster: Path) -> np.nda
 
     with rasterio.open(template_raster) as template:
         storm = storm.to_crs(template.crs)
-        geometries = [geometry for geometry in storm.geometry if geometry is not None and not geometry.is_empty]
+        geometries = [
+            geometry
+            for geometry in storm.geometry
+            if geometry is not None and not geometry.is_empty
+        ]
         if not geometries:
             raise RuntimeError("Storm footprint does not contain any valid geometries.")
 
@@ -183,7 +200,9 @@ def run_timestep(
 ) -> None:
     """Advance the full model by one timestep."""
     timestep_start_seconds = state.hydraulic.time_seconds
-    apply_rainfall_forcing(state, rainfall, storm_mask, timestep_start_seconds, dt_seconds)
+    apply_rainfall_forcing(
+        state, rainfall, storm_mask, timestep_start_seconds, dt_seconds
+    )
     water_timestep(state, dt_seconds)
     state.hydraulic.time_seconds += dt_seconds
     update_diagnostics(state, dt_seconds)
@@ -219,7 +238,9 @@ def average_rainfall_rate_m_per_second(
     return 0.5 * (start_rate + end_rate)
 
 
-def rainfall_rate_m_per_second(rainfall: RainfallConfig, elapsed_seconds: float) -> float:
+def rainfall_rate_m_per_second(
+    rainfall: RainfallConfig, elapsed_seconds: float
+) -> float:
     """Linearly interpolate rainfall intensity and return meters per second."""
     elapsed_minutes = elapsed_seconds / 60
     points = rainfall.series
@@ -229,9 +250,8 @@ def rainfall_rate_m_per_second(rainfall: RainfallConfig, elapsed_seconds: float)
 
     for previous, current in zip(points, points[1:]):
         if elapsed_minutes <= current.time_minutes:
-            elapsed_fraction = (
-                (elapsed_minutes - previous.time_minutes)
-                / (current.time_minutes - previous.time_minutes)
+            elapsed_fraction = (elapsed_minutes - previous.time_minutes) / (
+                current.time_minutes - previous.time_minutes
             )
             rate_mm_per_hr = previous.rate_mm_per_hr + (
                 (current.rate_mm_per_hr - previous.rate_mm_per_hr) * elapsed_fraction
@@ -368,8 +388,7 @@ def local_inertial_flux_update(
         / depth_safe ** (7 / 3)
     )
     flux = (
-        old_flux
-        - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
+        old_flux - GRAVITY_METERS_PER_SECOND_SQUARED * face_depth * dt_seconds * slope
     ) / denominator
     return np.where(valid_faces & (face_depth >= DRY_DEPTH_METERS), flux, 0)
 
@@ -457,13 +476,24 @@ def render_snapshot(
     """Render DEM, storm footprint, and water depth into a PNG image."""
     figure, axis = plt.subplots(figsize=(8, 6), dpi=150)
     axis.imshow(np.ma.masked_invalid(grid.elevation), cmap="gray")
-    axis.imshow(np.where(storm_mask, 1.0, np.nan), cmap="Blues", alpha=0.22, vmin=0, vmax=1)
+    axis.imshow(
+        np.where(storm_mask, 1.0, np.nan),
+        cmap="Blues",
+        alpha=0.22,
+        vmin=0,
+        vmax=1,
+    )
 
     depth_layer = np.ma.masked_where(depth <= 0, depth)
     depth_scale = {}
     if max_depth_meters is not None:
         depth_scale = {"vmin": 0, "vmax": max_depth_meters}
-    water = axis.imshow(depth_layer, cmap="turbo", alpha=0.75, **depth_scale)
+    water = axis.imshow(
+        depth_layer,
+        cmap=WATER_DEPTH_COLORMAP,
+        alpha=WATER_DEPTH_ALPHA,
+        **depth_scale,
+    )
     if np.nanmax(depth) > 0:
         colorbar = figure.colorbar(water, ax=axis, fraction=0.046, pad=0.04)
         colorbar.set_label("Water depth (m)")

@@ -8,6 +8,8 @@ import numpy as np
 
 from nefas.config import RainfallConfig, RainfallPoint
 from nefas.engine import (
+    WATER_DEPTH_ALPHA,
+    WATER_DEPTH_COLORMAP,
     add_rainfall_depth,
     apply_rainfall_forcing,
     rainfall_rate_m_per_second,
@@ -278,6 +280,29 @@ class EngineTests(unittest.TestCase):
         _, water_kwargs = axis.imshow.call_args_list[2]
         self.assertNotIn("vmin", water_kwargs)
         self.assertNotIn("vmax", water_kwargs)
+
+    def test_render_snapshot_uses_water_colormap(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 1), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        figure = MagicMock()
+        axis = MagicMock()
+        axis.imshow.side_effect = [MagicMock(), MagicMock(), MagicMock()]
+
+        with patch("nefas.engine.plt.subplots", return_value=(figure, axis)):
+            render_snapshot(
+                grid,
+                storm_mask=np.array([[True]]),
+                depth=np.array([[0.5]], dtype=np.float64),
+                path=Path("snapshot.png"),
+                elapsed_minutes=15,
+            )
+
+        _, water_kwargs = axis.imshow.call_args_list[2]
+        self.assertIs(water_kwargs["cmap"], WATER_DEPTH_COLORMAP)
+        self.assertEqual(water_kwargs["alpha"], WATER_DEPTH_ALPHA)
 
 
 if __name__ == "__main__":
