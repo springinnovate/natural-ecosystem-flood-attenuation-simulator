@@ -30,9 +30,23 @@ class RainfallConfig:
 
 
 @dataclass(frozen=True)
-class TimeStepConfig:
-    seconds: float
-    max_seconds: float | None = None
+class SimulationTimeConfig:
+    time_step_seconds: float
+    max_time_step_seconds: float | None = None
+    total_runtime_seconds: float | None = None
+
+    @property
+    def seconds(self) -> float:
+        """Compatibility alias for older callers using config.time_step.seconds."""
+        return self.time_step_seconds
+
+    @property
+    def max_seconds(self) -> float | None:
+        """Compatibility alias for older callers using config.time_step.max_seconds."""
+        return self.max_time_step_seconds
+
+
+TimeStepConfig = SimulationTimeConfig
 
 
 @dataclass(frozen=True)
@@ -62,9 +76,14 @@ class ProcessingConfig:
 class SimulationConfig:
     inputs: InputConfig
     rainfall: RainfallConfig
-    time_step: TimeStepConfig
+    simulation_time: SimulationTimeConfig
     output: OutputConfig
     processing: ProcessingConfig
+
+    @property
+    def time_step(self) -> SimulationTimeConfig:
+        """Compatibility alias for older callers using config.time_step."""
+        return self.simulation_time
 
 
 def load_config(path: Path) -> SimulationConfig:
@@ -83,7 +102,7 @@ def parse_config(raw: Any) -> SimulationConfig:
     root = _mapping(raw, "configuration")
     inputs = _mapping(root.get("inputs"), "inputs")
     rainfall = _mapping(root.get("rainfall"), "rainfall")
-    time_step = _mapping(root.get("time_step"), "time_step")
+    simulation_time = _simulation_time_config(root)
     output = _mapping(root.get("output"), "output")
     processing = root.get("processing") or {}
     processing = _mapping(processing, "processing")
@@ -95,10 +114,7 @@ def parse_config(raw: Any) -> SimulationConfig:
             storm_footprint=_path(inputs, "storm_footprint"),
         ),
         rainfall=RainfallConfig(series=_rainfall_series(rainfall)),
-        time_step=TimeStepConfig(
-            seconds=_float(time_step, "seconds", positive=True),
-            max_seconds=_optional_float(time_step, "max_seconds", positive=True),
-        ),
+        simulation_time=simulation_time,
         output=OutputConfig(
             directory=_path(output, "directory"),
             snapshots=_snapshot_config(output),
@@ -137,8 +153,40 @@ def _snapshot_config(section: dict[str, Any]) -> SnapshotConfig:
     )
     return SnapshotConfig(
         directory=Path(directory),
-        interval_minutes=_float({"interval_minutes": interval_minutes}, "interval_minutes", positive=True),
+        interval_minutes=_float(
+            {"interval_minutes": interval_minutes},
+            "interval_minutes",
+            positive=True,
+        ),
         max_depth_meters=_optional_float(snapshots, "max_depth_meters", positive=True),
+    )
+
+
+def _simulation_time_config(root: dict[str, Any]) -> SimulationTimeConfig:
+    if "simulation_time" in root:
+        simulation_time = _mapping(root.get("simulation_time"), "simulation_time")
+        return SimulationTimeConfig(
+            time_step_seconds=_float(
+                simulation_time,
+                "time_step_seconds",
+                positive=True,
+            ),
+            max_time_step_seconds=_optional_float(
+                simulation_time,
+                "max_time_step_seconds",
+                positive=True,
+            ),
+            total_runtime_seconds=_optional_float(
+                simulation_time,
+                "total_runtime_seconds",
+                positive=True,
+            ),
+        )
+
+    time_step = _mapping(root.get("time_step"), "time_step")
+    return SimulationTimeConfig(
+        time_step_seconds=_float(time_step, "seconds", positive=True),
+        max_time_step_seconds=_optional_float(time_step, "max_seconds", positive=True),
     )
 
 

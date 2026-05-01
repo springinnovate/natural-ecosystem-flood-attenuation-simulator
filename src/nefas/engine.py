@@ -56,7 +56,7 @@ def run_simulation(
     storm_mask = storm_footprint_mask(
         config.inputs.storm_footprint, intermediates.clipped_dem
     )
-    duration_seconds = rainfall_duration_seconds(config.rainfall)
+    duration_seconds = simulation_duration_seconds(config)
     snapshot_interval_seconds = config.output.snapshots.interval_minutes * 60
 
     snapshot_directory = resolve_snapshot_directory(
@@ -83,7 +83,7 @@ def run_simulation(
                 current_time_seconds=state.hydraulic.time_seconds,
                 duration_seconds=duration_seconds,
                 next_snapshot_seconds=next_snapshot_seconds,
-                nominal_time_step_seconds=config.time_step.seconds,
+                nominal_time_step_seconds=effective_time_step_seconds(config),
             )
             run_timestep(
                 state,
@@ -151,6 +151,22 @@ def simulation_progress(duration_seconds: float) -> Iterator[object]:
 def rainfall_duration_seconds(rainfall: RainfallConfig) -> float:
     """Return the duration implied by the rainfall series."""
     return max(point.time_minutes for point in rainfall.series) * 60
+
+
+def simulation_duration_seconds(config: SimulationConfig) -> float:
+    """Return the configured simulation duration or the rainfall event duration."""
+    if config.simulation_time.total_runtime_seconds is not None:
+        return config.simulation_time.total_runtime_seconds
+    return rainfall_duration_seconds(config.rainfall)
+
+
+def effective_time_step_seconds(config: SimulationConfig) -> float:
+    """Return the timestep duration after applying the optional maximum cap."""
+    time_step_seconds = config.simulation_time.time_step_seconds
+    max_time_step_seconds = config.simulation_time.max_time_step_seconds
+    if max_time_step_seconds is None:
+        return time_step_seconds
+    return min(time_step_seconds, max_time_step_seconds)
 
 
 def timestep_duration_seconds(
@@ -265,7 +281,7 @@ def rainfall_rate_m_per_second(
             )
             return rate_mm_per_hr / 1000 / 3600
 
-    return points[-1].rate_mm_per_hr / 1000 / 3600
+    return 0
 
 
 def add_rainfall_depth(
