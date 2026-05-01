@@ -578,6 +578,72 @@ def local_inertial_flux_update(
 
 @profile
 def limit_outgoing_fluxes(state: SimulationState, dt_seconds: float) -> None:
+    """Scale outgoing face fluxes with a compiled limiter."""
+    limit_outgoing_fluxes_numba(
+        state.hydraulic.depth,
+        state.hydraulic.qx,
+        state.hydraulic.qy,
+        state.grid.valid_cells,
+        state.grid.dx,
+        state.grid.dy,
+        dt_seconds,
+    )
+
+
+@njit(cache=True, parallel=True)
+def limit_outgoing_fluxes_numba(
+    depth: np.ndarray,
+    qx: np.ndarray,
+    qy: np.ndarray,
+    valid_cells: np.ndarray,
+    dx: float,
+    dy: float,
+    dt_seconds: float,
+) -> None:
+    """Scale outgoing face fluxes in compiled loops."""
+    rows, cols = depth.shape
+    scale = np.ones(depth.shape, dtype=np.float64)
+
+    for row in prange(rows):
+        for col in range(cols):
+            outgoing_depth = dt_seconds * (
+                max(qx[row, col + 1], 0.0) / dx
+                + max(-qx[row, col], 0.0) / dx
+                + max(qy[row + 1, col], 0.0) / dy
+                + max(-qy[row, col], 0.0) / dy
+            )
+            if valid_cells[row, col] and outgoing_depth > depth[row, col]:
+                if outgoing_depth > 0.0:
+                    scale[row, col] = depth[row, col] / outgoing_depth
+
+    for row in prange(rows):
+        for col in range(1, cols):
+            if qx[row, col] >= 0.0:
+                qx[row, col] *= scale[row, col - 1]
+            else:
+                qx[row, col] *= scale[row, col]
+
+    for row in prange(rows):
+        if qx[row, 0] < 0.0:
+            qx[row, 0] *= scale[row, 0]
+        if qx[row, cols] >= 0.0:
+            qx[row, cols] *= scale[row, cols - 1]
+
+    for row in prange(1, rows):
+        for col in range(cols):
+            if qy[row, col] >= 0.0:
+                qy[row, col] *= scale[row - 1, col]
+            else:
+                qy[row, col] *= scale[row, col]
+
+    for col in prange(cols):
+        if qy[0, col] < 0.0:
+            qy[0, col] *= scale[0, col]
+        if qy[rows, col] >= 0.0:
+            qy[rows, col] *= scale[rows - 1, col]
+
+
+def limit_outgoing_fluxes_numpy(state: SimulationState, dt_seconds: float) -> None:
     """Scale outgoing face fluxes so no cell can lose more water than it stores."""
     depth = state.hydraulic.depth
     qx = state.hydraulic.qx
