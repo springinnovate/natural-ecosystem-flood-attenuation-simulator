@@ -18,11 +18,18 @@ from .preprocessing import IntermediateOutputs
 from .simulation import RasterGrid, SimulationState
 
 matplotlib.use("Agg")
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib import pyplot as plt
 
 LOGGER = logging.getLogger(__name__)
 GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
 DRY_DEPTH_METERS = 0.001
+WATER_DEPTH_ALPHA = 0.82
+WATER_DEPTH_COLORMAP = LinearSegmentedColormap.from_list(
+    "nefas_water_depth",
+    ("#d8fbff", "#86d4ff", "#1f8be3", "#08306b"),
+)
+WATER_DEPTH_COLORMAP.set_bad((0, 0, 0, 0))
 
 
 @dataclass(frozen=True)
@@ -455,7 +462,7 @@ def render_snapshot(
     axis.imshow(np.where(storm_mask, 1.0, np.nan), cmap="Blues", alpha=0.22, vmin=0, vmax=1)
 
     depth_layer = np.ma.masked_where(depth <= 0, depth)
-    water = axis.imshow(depth_layer, cmap="turbo", alpha=0.75)
+    water = axis.imshow(depth_layer, cmap=WATER_DEPTH_COLORMAP, alpha=WATER_DEPTH_ALPHA)
     if np.nanmax(depth) > 0:
         colorbar = figure.colorbar(water, ax=axis, fraction=0.046, pad=0.04)
         colorbar.set_label("Water depth (m)")

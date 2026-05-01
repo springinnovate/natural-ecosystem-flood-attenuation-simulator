@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from nefas.config import RainfallConfig, RainfallPoint
 from nefas.engine import (
+    WATER_DEPTH_ALPHA,
+    WATER_DEPTH_COLORMAP,
     add_rainfall_depth,
     apply_rainfall_forcing,
     rainfall_rate_m_per_second,
+    render_snapshot,
     timestep_duration_seconds,
     water_timestep,
 )
@@ -226,6 +231,29 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(state.hydraulic.depth[0, 0], 0)
         self.assertAlmostEqual(state.hydraulic.depth[0, 1], 0.01)
         self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 0.01)
+
+    def test_render_snapshot_uses_water_colormap(self) -> None:
+        grid = RasterGrid(
+            elevation=np.zeros((1, 1), dtype=np.float64),
+            dx=30,
+            dy=30,
+        )
+        figure = MagicMock()
+        axis = MagicMock()
+        axis.imshow.side_effect = [MagicMock(), MagicMock(), MagicMock()]
+
+        with patch("nefas.engine.plt.subplots", return_value=(figure, axis)):
+            render_snapshot(
+                grid,
+                storm_mask=np.array([[True]]),
+                depth=np.array([[0.5]], dtype=np.float64),
+                path=Path("snapshot.png"),
+                elapsed_minutes=15,
+            )
+
+        _, water_kwargs = axis.imshow.call_args_list[2]
+        self.assertIs(water_kwargs["cmap"], WATER_DEPTH_COLORMAP)
+        self.assertEqual(water_kwargs["alpha"], WATER_DEPTH_ALPHA)
 
 
 if __name__ == "__main__":
