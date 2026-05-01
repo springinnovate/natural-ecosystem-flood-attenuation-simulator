@@ -23,6 +23,8 @@ from nefas.engine import (
     add_rainfall_depth,
     apply_rainfall_forcing,
     effective_time_step_seconds,
+    local_inertial_flux_update,
+    local_inertial_flux_update_numba,
     rainfall_rate_m_per_second,
     render_snapshot,
     simulation_duration_seconds,
@@ -132,6 +134,55 @@ class EngineTests(unittest.TestCase):
         )
 
         self.assertEqual(effective_time_step_seconds(config), 30)
+
+    def test_numba_flux_update_matches_numpy_reference(self) -> None:
+        old_flux = np.array(
+            [
+                [0.0, 0.5, -0.2],
+                [1.5, -1.0, 0.25],
+            ],
+            dtype=np.float64,
+        )
+        face_depth = np.array(
+            [
+                [0.0, 0.002, 0.5],
+                [1.25, 0.0005, 0.9],
+            ],
+            dtype=np.float64,
+        )
+        slope = np.array(
+            [
+                [0.0, 0.01, -0.02],
+                [0.03, -0.01, 0.005],
+            ],
+            dtype=np.float64,
+        )
+        manning_n = np.full_like(old_flux, 0.08)
+        valid_faces = np.array(
+            [
+                [True, True, False],
+                [True, True, True],
+            ]
+        )
+
+        expected = local_inertial_flux_update(
+            old_flux=old_flux,
+            face_depth=face_depth,
+            slope=slope,
+            manning_n=manning_n,
+            valid_faces=valid_faces,
+            dt_seconds=5.0,
+        )
+        actual = local_inertial_flux_update_numba(
+            old_flux,
+            face_depth,
+            slope,
+            manning_n,
+            valid_faces,
+            5.0,
+        )
+
+        np.testing.assert_allclose(actual, expected)
 
     def test_apply_rainfall_forcing_adds_depth_only_to_valid_storm_cells(self) -> None:
         grid = RasterGrid(

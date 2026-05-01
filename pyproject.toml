@@ -12,6 +12,7 @@ dependencies = [
     "geopandas>=0.14",
     "line-profiler>=4.1",
     "matplotlib>=3.9",
+    "numba>=0.59",
     "numpy>=1.26",
     "PyYAML>=6.0",
     "rasterio>=1.3",
