@@ -16,6 +16,18 @@ Prepare a model run from a YAML configuration:
 python run_model.py examples/minimal_config.yaml
 ```
 
+Configure model timing in YAML with `simulation_time`:
+
+```yaml
+simulation_time:
+  time_step_seconds: 5
+  max_time_step_seconds: 30
+  total_runtime_seconds: 172800
+```
+
+`total_runtime_seconds` controls the full simulation duration, so model runs can
+continue after the rainfall series ends and capture drainage.
+
 ## Line Profiling
 
 The main hydraulic timestep functions and snapshot renderer are decorated for

@@ -6,18 +6,60 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from nefas.config import RainfallConfig, RainfallPoint
+from nefas.config import (
+    AreaOfInterestProcessingConfig,
+    InputConfig,
+    OutputConfig,
+    ProcessingConfig,
+    RainfallConfig,
+    RainfallPoint,
+    SimulationConfig,
+    SimulationTimeConfig,
+    SnapshotConfig,
+)
 from nefas.engine import (
     WATER_DEPTH_ALPHA,
     WATER_DEPTH_COLORMAP,
     add_rainfall_depth,
     apply_rainfall_forcing,
+    effective_time_step_seconds,
     rainfall_rate_m_per_second,
     render_snapshot,
+    simulation_duration_seconds,
     timestep_duration_seconds,
     water_timestep,
 )
 from nefas.simulation import RasterGrid, SimulationState
+
+
+def make_simulation_config(
+    *,
+    simulation_time: SimulationTimeConfig,
+) -> SimulationConfig:
+    return SimulationConfig(
+        inputs=InputConfig(
+            dem=Path("data/dem.tif"),
+            area_of_interest=Path("data/aoi.gpkg"),
+            storm_footprint=Path("data/storm.gpkg"),
+        ),
+        rainfall=RainfallConfig(
+            series=(
+                RainfallPoint(time_minutes=0, rate_mm_per_hr=0),
+                RainfallPoint(time_minutes=60, rate_mm_per_hr=60),
+            )
+        ),
+        simulation_time=simulation_time,
+        output=OutputConfig(
+            directory=Path("outputs/example"),
+            snapshots=SnapshotConfig(
+                directory=Path("snapshots"),
+                interval_minutes=15,
+            ),
+        ),
+        processing=ProcessingConfig(
+            area_of_interest=AreaOfInterestProcessingConfig(filters={})
+        ),
+    )
 
 
 class EngineTests(unittest.TestCase):
@@ -53,6 +95,43 @@ class EngineTests(unittest.TestCase):
             rainfall_rate_m_per_second(rainfall, elapsed_seconds=1800),
             0.03 / 3600,
         )
+
+    def test_rainfall_rate_is_zero_after_final_rainfall_point(self) -> None:
+        rainfall = RainfallConfig(
+            series=(
+                RainfallPoint(time_minutes=0, rate_mm_per_hr=0),
+                RainfallPoint(time_minutes=60, rate_mm_per_hr=60),
+            )
+        )
+
+        self.assertEqual(rainfall_rate_m_per_second(rainfall, elapsed_seconds=3601), 0)
+
+    def test_simulation_duration_uses_configured_runtime_when_present(self) -> None:
+        config = make_simulation_config(
+            simulation_time=SimulationTimeConfig(
+                time_step_seconds=5,
+                total_runtime_seconds=7200,
+            )
+        )
+
+        self.assertEqual(simulation_duration_seconds(config), 7200)
+
+    def test_simulation_duration_falls_back_to_rainfall_duration(self) -> None:
+        config = make_simulation_config(
+            simulation_time=SimulationTimeConfig(time_step_seconds=5)
+        )
+
+        self.assertEqual(simulation_duration_seconds(config), 3600)
+
+    def test_effective_time_step_applies_maximum_cap(self) -> None:
+        config = make_simulation_config(
+            simulation_time=SimulationTimeConfig(
+                time_step_seconds=60,
+                max_time_step_seconds=30,
+            )
+        )
+
+        self.assertEqual(effective_time_step_seconds(config), 30)
 
     def test_apply_rainfall_forcing_adds_depth_only_to_valid_storm_cells(self) -> None:
         grid = RasterGrid(

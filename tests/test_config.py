@@ -21,7 +21,11 @@ class ConfigParsingTests(unittest.TestCase):
                         {"time_minutes": 15, "rate_mm_per_hr": 25},
                     ]
                 },
-                "time_step": {"seconds": 5},
+                "simulation_time": {
+                    "time_step_seconds": 5,
+                    "max_time_step_seconds": 30,
+                    "total_runtime_seconds": 7200,
+                },
                 "output": {
                     "directory": "outputs/example",
                     "snapshots": {
@@ -43,7 +47,11 @@ class ConfigParsingTests(unittest.TestCase):
 
         self.assertEqual(config.inputs.dem, Path("data/dem.tif"))
         self.assertEqual(config.rainfall.series[1].rate_mm_per_hr, 25)
+        self.assertEqual(config.simulation_time.time_step_seconds, 5)
+        self.assertEqual(config.simulation_time.max_time_step_seconds, 30)
+        self.assertEqual(config.simulation_time.total_runtime_seconds, 7200)
         self.assertEqual(config.time_step.seconds, 5)
+        self.assertEqual(config.time_step.max_seconds, 30)
         self.assertEqual(config.output.directory, Path("outputs/example"))
         self.assertEqual(config.output.snapshots.directory, Path("frames"))
         self.assertEqual(config.output.snapshots.interval_minutes, 10)
@@ -66,7 +74,7 @@ class ConfigParsingTests(unittest.TestCase):
                         {"time_minutes": 0, "rate_mm_per_hr": 0},
                     ]
                 },
-                "time_step": {"seconds": 5},
+                "simulation_time": {"time_step_seconds": 5},
                 "output": {"directory": "outputs/example"},
             }
         )
@@ -89,10 +97,32 @@ class ConfigParsingTests(unittest.TestCase):
                         "storm_footprint": "data/storm.gpkg",
                     },
                     "rainfall": {"series": []},
-                    "time_step": {"seconds": 5},
+                    "simulation_time": {"time_step_seconds": 5},
                     "output": {"directory": "outputs/example"},
                 }
             )
+
+    def test_accepts_legacy_time_step_configuration(self) -> None:
+        config = parse_config(
+            {
+                "inputs": {
+                    "dem": "data/dem.tif",
+                    "area_of_interest": "data/aoi.gpkg",
+                    "storm_footprint": "data/storm.gpkg",
+                },
+                "rainfall": {
+                    "series": [
+                        {"time_minutes": 0, "rate_mm_per_hr": 0},
+                    ]
+                },
+                "time_step": {"seconds": 10, "max_seconds": 60},
+                "output": {"directory": "outputs/example"},
+            }
+        )
+
+        self.assertEqual(config.simulation_time.time_step_seconds, 10)
+        self.assertEqual(config.simulation_time.max_time_step_seconds, 60)
+        self.assertIsNone(config.simulation_time.total_runtime_seconds)
 
 
 if __name__ == "__main__":
