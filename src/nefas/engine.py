@@ -1,6 +1,7 @@
 import logging
 import sys
 from collections.abc import Iterator
+from concurrent.futures import Future, ProcessPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,12 +27,16 @@ from matplotlib import pyplot as plt
 LOGGER = logging.getLogger(__name__)
 GRAVITY_METERS_PER_SECOND_SQUARED = 9.80665
 DRY_DEPTH_METERS = 0.001
+MAX_PENDING_SNAPSHOT_RENDERS = 10
 WATER_DEPTH_ALPHA = 0.82
 WATER_DEPTH_COLORMAP = LinearSegmentedColormap.from_list(
     "nefas_water_depth",
     ("#d8fbff", "#86d4ff", "#1f8be3", "#08306b"),
 )
 WATER_DEPTH_COLORMAP.set_bad((0, 0, 0, 0))
+
+_SNAPSHOT_RENDER_GRID: RasterGrid | None = None
+_SNAPSHOT_RENDER_STORM_MASK: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,42 @@ class SimulationRunResult:
     snapshot_directory: Path
     snapshots: tuple[Path, ...]
     duration_seconds: float
+
+
+@dataclass
+class SnapshotRenderQueue:
+    """Bounded asynchronous snapshot renderer."""
+
+    executor: ProcessPoolExecutor
+    pending: list[Future[Path]]
+
+    def submit(
+        self,
+        *,
+        depth: np.ndarray,
+        path: Path,
+        elapsed_minutes: float,
+        max_depth_meters: float | None,
+    ) -> Path:
+        """Queue a render job and apply backpressure when too many are pending."""
+        while len(self.pending) >= MAX_PENDING_SNAPSHOT_RENDERS:
+            self.pending.pop(0).result()
+
+        self.pending.append(
+            self.executor.submit(
+                render_snapshot_from_context,
+                depth.copy(),
+                path,
+                elapsed_minutes,
+                max_depth_meters,
+            )
+        )
+        return path
+
+    def wait(self) -> None:
+        """Wait for all queued render jobs, surfacing worker exceptions."""
+        while self.pending:
+            self.pending.pop(0).result()
 
 
 def run_simulation(
@@ -62,50 +103,62 @@ def run_simulation(
     )
     snapshot_directory.mkdir(parents=True, exist_ok=True)
 
-    snapshots = [
-        write_snapshot(
-            grid,
+    with ProcessPoolExecutor(
+        max_workers=1,
+        initializer=initialize_snapshot_renderer,
+        initargs=(
+            grid.elevation,
+            grid.dx,
+            grid.dy,
+            grid.valid_cells,
             storm_mask,
-            state,
-            snapshot_directory,
-            index=0,
-            max_depth_meters=config.output.snapshots.max_depth_meters,
-        )
-    ]
-    next_snapshot_seconds = min(snapshot_interval_seconds, duration_seconds)
-    with simulation_progress(duration_seconds) as progress:
-        while state.hydraulic.time_seconds < duration_seconds:
-            previous_time_seconds = state.hydraulic.time_seconds
-            dt_seconds = timestep_duration_seconds(
-                current_time_seconds=state.hydraulic.time_seconds,
-                duration_seconds=duration_seconds,
-                next_snapshot_seconds=next_snapshot_seconds,
-                nominal_time_step_seconds=effective_time_step_seconds(config),
-            )
-            run_timestep(
+        ),
+    ) as executor:
+        render_queue = SnapshotRenderQueue(executor=executor, pending=[])
+        snapshots = [
+            queue_snapshot(
+                render_queue,
                 state,
-                config.rainfall,
-                storm_mask,
-                dt_seconds,
+                snapshot_directory,
+                index=0,
+                max_depth_meters=config.output.snapshots.max_depth_meters,
             )
-            progress.update(state.hydraulic.time_seconds - previous_time_seconds)
+        ]
+        next_snapshot_seconds = min(snapshot_interval_seconds, duration_seconds)
+        with simulation_progress(duration_seconds) as progress:
+            while state.hydraulic.time_seconds < duration_seconds:
+                previous_time_seconds = state.hydraulic.time_seconds
+                dt_seconds = timestep_duration_seconds(
+                    current_time_seconds=state.hydraulic.time_seconds,
+                    duration_seconds=duration_seconds,
+                    next_snapshot_seconds=next_snapshot_seconds,
+                    nominal_time_step_seconds=effective_time_step_seconds(config),
+                )
+                run_timestep(
+                    state,
+                    config.rainfall,
+                    storm_mask,
+                    dt_seconds,
+                )
+                progress.update(state.hydraulic.time_seconds - previous_time_seconds)
 
-            if state.hydraulic.time_seconds >= next_snapshot_seconds:
-                snapshots.append(
-                    write_snapshot(
-                        grid,
-                        storm_mask,
-                        state,
-                        snapshot_directory,
-                        index=len(snapshots),
-                        max_depth_meters=config.output.snapshots.max_depth_meters,
+                if state.hydraulic.time_seconds >= next_snapshot_seconds:
+                    snapshots.append(
+                        queue_snapshot(
+                            render_queue,
+                            state,
+                            snapshot_directory,
+                            index=len(snapshots),
+                            max_depth_meters=config.output.snapshots.max_depth_meters,
+                        )
                     )
-                )
-                progress.set_postfix(snapshots=len(snapshots))
-                next_snapshot_seconds = min(
-                    next_snapshot_seconds + snapshot_interval_seconds,
-                    duration_seconds,
-                )
+                    progress.set_postfix(snapshots=len(snapshots))
+                    next_snapshot_seconds = min(
+                        next_snapshot_seconds + snapshot_interval_seconds,
+                        duration_seconds,
+                    )
+
+        render_queue.wait()
 
     LOGGER.info(
         "Wrote %s simulation snapshots to %s",
@@ -117,6 +170,45 @@ def run_simulation(
         snapshots=tuple(snapshots),
         duration_seconds=state.hydraulic.time_seconds,
     )
+
+
+def initialize_snapshot_renderer(
+    elevation: np.ndarray,
+    dx: float,
+    dy: float,
+    valid_cells: np.ndarray,
+    storm_mask: np.ndarray,
+) -> None:
+    """Initialize read-only render context inside a worker process."""
+    global _SNAPSHOT_RENDER_GRID, _SNAPSHOT_RENDER_STORM_MASK
+    _SNAPSHOT_RENDER_GRID = RasterGrid(
+        elevation=elevation,
+        dx=dx,
+        dy=dy,
+        valid_cells=valid_cells,
+    )
+    _SNAPSHOT_RENDER_STORM_MASK = storm_mask
+
+
+def render_snapshot_from_context(
+    depth: np.ndarray,
+    path: Path,
+    elapsed_minutes: float,
+    max_depth_meters: float | None,
+) -> Path:
+    """Render a queued snapshot using worker-local static context."""
+    if _SNAPSHOT_RENDER_GRID is None or _SNAPSHOT_RENDER_STORM_MASK is None:
+        raise RuntimeError("Snapshot renderer has not been initialized.")
+
+    render_snapshot(
+        _SNAPSHOT_RENDER_GRID,
+        _SNAPSHOT_RENDER_STORM_MASK,
+        depth,
+        path,
+        elapsed_minutes=elapsed_minutes,
+        max_depth_meters=max_depth_meters,
+    )
+    return path
 
 
 def resolve_snapshot_directory(snapshot_directory: Path, workspace: Path) -> Path:
@@ -661,6 +753,23 @@ def update_diagnostics(state: SimulationState, dt_seconds: float) -> None:
     newly_wet = np.isnan(state.diagnostics.arrival_time) & wet_cells
     state.diagnostics.arrival_time[newly_wet] = state.hydraulic.time_seconds
     state.diagnostics.flood_duration[wet_cells] += dt_seconds
+
+
+def queue_snapshot(
+    render_queue: SnapshotRenderQueue,
+    state: SimulationState,
+    snapshot_directory: Path,
+    index: int,
+    max_depth_meters: float | None = None,
+) -> Path:
+    """Queue one simulation snapshot render and return its eventual path."""
+    snapshot = snapshot_directory / f"snapshot_{index:04d}.png"
+    return render_queue.submit(
+        depth=state.hydraulic.depth,
+        path=snapshot,
+        elapsed_minutes=state.hydraulic.time_seconds / 60,
+        max_depth_meters=max_depth_meters,
+    )
 
 
 def write_snapshot(
