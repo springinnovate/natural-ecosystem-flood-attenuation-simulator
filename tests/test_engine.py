@@ -18,6 +18,8 @@ from nefas.config import (
     SnapshotConfig,
 )
 from nefas.engine import (
+    MAX_PENDING_SNAPSHOT_RENDERS,
+    SnapshotRenderQueue,
     WATER_DEPTH_ALPHA,
     WATER_DEPTH_COLORMAP,
     add_rainfall_depth,
@@ -35,6 +37,25 @@ from nefas.engine import (
     water_timestep,
 )
 from nefas.simulation import RasterGrid, SimulationState
+
+
+class FakeFuture:
+    def __init__(self, result: Path) -> None:
+        self._result = result
+        self.result_calls = 0
+
+    def result(self) -> Path:
+        self.result_calls += 1
+        return self._result
+
+
+class FakeExecutor:
+    def __init__(self) -> None:
+        self.submissions = []
+
+    def submit(self, function, *args):
+        self.submissions.append((function, args))
+        return FakeFuture(args[1])
 
 
 def make_simulation_config(
@@ -68,6 +89,30 @@ def make_simulation_config(
 
 
 class EngineTests(unittest.TestCase):
+    def test_snapshot_render_queue_copies_depth_and_limits_pending_jobs(self) -> None:
+        executor = FakeExecutor()
+        oldest_future = FakeFuture(Path("oldest.png"))
+        render_queue = SnapshotRenderQueue(
+            executor=executor,
+            pending=[oldest_future]
+            + [FakeFuture(Path(f"snapshot_{index}.png")) for index in range(9)],
+        )
+        depth = np.array([[1.0]], dtype=np.float64)
+
+        snapshot = render_queue.submit(
+            depth=depth,
+            path=Path("snapshot_0010.png"),
+            elapsed_minutes=10,
+            max_depth_meters=2.0,
+        )
+        depth[0, 0] = 99.0
+
+        self.assertEqual(snapshot, Path("snapshot_0010.png"))
+        self.assertEqual(oldest_future.result_calls, 1)
+        self.assertEqual(len(render_queue.pending), MAX_PENDING_SNAPSHOT_RENDERS)
+        submitted_depth = executor.submissions[0][1][0]
+        np.testing.assert_allclose(submitted_depth, np.array([[1.0]]))
+
     def test_timestep_stops_at_snapshot_and_event_end(self) -> None:
         self.assertEqual(
             timestep_duration_seconds(
