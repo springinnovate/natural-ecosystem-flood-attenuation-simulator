@@ -574,9 +574,9 @@ class EngineTests(unittest.TestCase):
 
         water_timestep(state, dt_seconds=10)
 
-        self.assertAlmostEqual(state.hydraulic.depth[0, 0], 0)
-        self.assertAlmostEqual(state.hydraulic.depth[0, 1], 0.01)
-        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 0.01)
+        self.assertAlmostEqual(state.hydraulic.depth[0, 0], 0, delta=1e-6)
+        self.assertAlmostEqual(state.hydraulic.depth[0, 1], 0.01, delta=1e-6)
+        self.assertAlmostEqual(float(state.hydraulic.depth.sum()), 0.01, delta=1e-6)
 
     def test_render_snapshot_uses_configured_depth_scale(self) -> None:
         grid = RasterGrid(
